@@ -127,11 +127,18 @@ class MainWindow(QWidget):
         self.tabWidget.tabBarClicked.connect(self.clear_selection) # Deselect game when changing tabs!!!
 
         font = self.allListWidget.font()
-        font.setPointSize(11)  # Adjust the font size as needed
+        if isMacOS:
+            font.setPointSize(16)
+        else:
+            font.setPointSize(11)  # Adjust the font size as needed
+
         self.allListWidget.setFont(font)
 
         font = self.favoritesListWidget.font()
-        font.setPointSize(11)  # Adjust the font size as needed
+        if isMacOS:
+            font.setPointSize(16)
+        else:
+            font.setPointSize(11)  # Adjust the font size as needed
         self.favoritesListWidget.setFont(font)
 
         layout.addWidget(self.tabWidget)
