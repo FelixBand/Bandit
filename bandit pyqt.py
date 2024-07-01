@@ -117,9 +117,9 @@ class MainWindow(QWidget):
         self.allListWidget.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.allListWidget.customContextMenuRequested.connect(self.show_context_menu)
         self.allListWidget.itemSelectionChanged.connect(self.selection_changed)  # Connect signal
+
+
         self.favoritesListWidget.itemSelectionChanged.connect(self.favorite_selection_changed)
-
-
         self.favoritesListWidget.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.favoritesListWidget.customContextMenuRequested.connect(self.show_context_menu)
         self.favoritesListWidget.itemSelectionChanged.connect(self.selection_changed)  # Connect signal
@@ -127,17 +127,11 @@ class MainWindow(QWidget):
         self.tabWidget.tabBarClicked.connect(self.clear_selection) # Deselect game when changing tabs!!!
 
         font = self.allListWidget.font()
-        if isMacOS: # Adjust the font size as needed
-            font.setPointSize(16)
-        else:
-            font.setPointSize(11)
+        font.setPointSize(11)  # Adjust the font size as needed
         self.allListWidget.setFont(font)
 
         font = self.favoritesListWidget.font()
-        if isMacOS: # Adjust the font size as needed
-            font.setPointSize(16)
-        else:
-            font.setPointSize(11)
+        font.setPointSize(11)  # Adjust the font size as needed
         self.favoritesListWidget.setFont(font)
 
         layout.addWidget(self.tabWidget)
@@ -459,15 +453,12 @@ class MainWindow(QWidget):
                 # self.taskbar_progress.setValue(progress_int)
         elif progress_int == 100:  # Check for completion
             self.progressLabel.setText("Extracting...")
-            self.downloadButton.setEnabled(True)
-            self.cancelButton.setEnabled(False)
-            self.playButton.setEnabled(True)
-        
-        if progress_int == 100:
-            self.uninstallButton.setEnabled(True)
 
     def extraction_complete(self):
         self.progressLabel.setText("Done!")
+        self.downloadButton.setEnabled(True)
+        self.cancelButton.setEnabled(False)
+        self.playButton.setEnabled(True)
         # Hide taskbar progress
         # if isWindows:
         #     self.taskbar_progress.hide()
