@@ -101,7 +101,7 @@ def get_first_folder_in_path(game_title):
 class MainWindow(QWidget):
     def __init__(self):
         super().__init__()
-        self.version = "0.2.1"
+        self.version = "0.2.2"
         self.setWindowTitle(f"Bandit - Game Downloader v{self.version}")
         self.setWindowIcon(QIcon("icon.ico"))  # Set the window icon
         self.setGeometry(100, 100, 800, 800)
