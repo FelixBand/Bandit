@@ -26,7 +26,7 @@ class OpacityDelegate(QStyledItemDelegate):
 
     def paint(self, painter, option, index):
         game_title = index.data(Qt.ItemDataRole.DisplayRole)
-        if game_title in self.installed_games:
+        if game_title in self.installed_games: # If the currently selected game is found in saved_paths.json
             painter.setOpacity(1.0)  # Fully opaque
         else:
             painter.setOpacity(0.5)  # 50% opaque
@@ -38,6 +38,7 @@ class OpacityDelegate(QStyledItemDelegate):
         self.installed_games = games
 
 class DownloadThread(QThread):
+    downloadCancelled = pyqtSignal()
     progressChanged = pyqtSignal(float)
     extractionComplete = pyqtSignal()
 
@@ -59,6 +60,9 @@ class DownloadThread(QThread):
                     tar.extract(member, self.save_path)
                     downloaded_size += member.size
                     percentage = min((downloaded_size / total_size) * 100, 100)  # Ensure progress doesn't exceed 100%
+
+                    print(f"Downloaded {downloaded_size} of {total_size}")
+
                     self.progressChanged.emit(percentage)
 
                     # Update downloaded bytes
@@ -69,6 +73,7 @@ class DownloadThread(QThread):
 
             if self.cancelled:
                 print("Download cancelled.")
+                self.downloadCancelled.emit()
                 return
 
             print("Extraction complete.")
@@ -432,6 +437,7 @@ class MainWindow(QWidget):
             self.thread = DownloadThread(selected_game_url, save_path)
             self.thread.progressChanged.connect(self.update_progress)
             self.thread.extractionComplete.connect(self.extraction_complete)
+            self.thread.downloadCancelled.connect(self.on_download_cancelled)
             self.thread.start()
             self.start_time = time.time()  # Record start time
             self.downloaded_bytes = 0  # Initialize downloaded bytes
@@ -445,6 +451,14 @@ class MainWindow(QWidget):
 
         self.update_installed_games() # Update opacities
 
+    def on_download_cancelled(self):
+        self.downloadButton.setEnabled(True)
+        self.uninstallButton.setEnabled(True)
+        if hasattr(self, 'thread'):
+            save_path = self.thread.save_path
+            selected_game = self.get_selected_game()
+            # Remove the partially downloaded file/folder
+            self.delete_game(selected_game)
 
     def update_progress(self, progress):
         progress_int = int(progress)  # Convert progress to an integer
@@ -491,9 +505,7 @@ class MainWindow(QWidget):
         if hasattr(self, 'thread'):
             save_path = self.thread.save_path
             self.thread.cancelled = True
-            self.downloadButton.setEnabled(True)
             self.cancelButton.setEnabled(False)
-            self.uninstallButton.setEnabled(True)
             self.progressLabel.setText("Download Canceled.")
             # Remove the partially downloaded file/folder
             #if os.path.exists(save_path):
@@ -542,37 +554,39 @@ class MainWindow(QWidget):
         
     def uninstall_game(self):
         selected_game = self.get_selected_game()
-        
+        self.delete_game(selected_game)
+
+    def delete_game(self, game):
         # Read the saved path from saved_paths.json
         with open(saved_paths_file, 'r') as file:
             saved_paths = json.load(file)
-            save_path = saved_paths[selected_game]
+            save_path = saved_paths[game]
         
         # Get the first folder in the game's path
-        first_folder = get_first_folder_in_path(selected_game)
+        first_folder = get_first_folder_in_path(game)
         game_path = os.path.join(save_path, first_folder)
         
         # Check if the path is correct and prompt for confirmation
-        confirm_message = f"Are you sure you want to uninstall {selected_game}? This will delete: {game_path}"
+        confirm_message = f"Are you sure you want to uninstall {game}? This will delete: {game_path}"
         reply = QMessageBox.question(self, 'Confirmation', confirm_message, 
                                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, 
-                                    QMessageBox.StandardButton.Yes)
+                                    QMessageBox.StandardButton.No)
         
         if reply == QMessageBox.StandardButton.Yes:
             try:
-                if os.path.exists(game_path):
+                if os.path.exists(game_path) and not first_folder == None or first_folder != '': # A pretty important check that makes sure it does not delete the parent folder.
                     shutil.rmtree(game_path) # scary
                     print(f"Deleted folder: {game_path}")
                 else:
                     print(f"The path {game_path} does not exist, removing instance from saved_paths.json")
                 # Remove the title from saved_paths.json
-                saved_paths.pop(selected_game, None)
+                saved_paths.pop(game, None)
                 
                 # Update saved_paths.json
                 with open(saved_paths_file, 'w') as file:
                     json.dump(saved_paths, file, indent=4)
                     
-                self.progressLabel.setText(f"{selected_game} has been uninstalled.")
+                self.progressLabel.setText(f"{game} has been uninstalled.")
             except Exception as e:
                 print(f"An error occurred while uninstalling the game: {e}")
         else:
