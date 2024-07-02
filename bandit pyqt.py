@@ -102,7 +102,7 @@ def get_first_folder_in_path(game_title):
 class MainWindow(QWidget):
     def __init__(self):
         super().__init__()
-        self.version = "0.2.3"
+        self.version = "0.2.4"
         self.setWindowTitle(f"Bandit - Game Downloader v{self.version}")
         self.setWindowIcon(QIcon("icon.ico"))  # Set the window icon
         self.setGeometry(100, 100, 800, 800)
@@ -298,6 +298,7 @@ class MainWindow(QWidget):
             with open(saved_paths_file, 'r') as file:
                 saved_paths = json.load(file)
                 if selected_game in saved_paths:
+                    self.downloadButton.setEnabled(False)
                     if not selected_game == self.game_downloading:
                         self.playButton.setEnabled(True)
                         self.uninstallButton.setEnabled(True)
