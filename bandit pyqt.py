@@ -101,7 +101,7 @@ def get_first_folder_in_path(game_title):
 class MainWindow(QWidget):
     def __init__(self):
         super().__init__()
-        self.version = "0.2.2"
+        self.version = "0.2.3"
         self.setWindowTitle(f"Bandit - Game Downloader v{self.version}")
         self.setWindowIcon(QIcon("icon.ico"))  # Set the window icon
         self.setGeometry(100, 100, 800, 800)
@@ -598,7 +598,7 @@ class MainWindow(QWidget):
                 # Update saved_paths.json
                 with open(saved_paths_file, 'w') as file:
                     json.dump(saved_paths, file, indent=4)
-                    
+
                 if os.path.exists(game_path) and not first_folder == None or first_folder != '': # A pretty important check that makes sure it does not delete the parent folder.
                     shutil.rmtree(game_path) # scary
                     print(f"Deleted folder: {game_path}")
