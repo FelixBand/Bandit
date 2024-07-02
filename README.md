@@ -15,6 +15,6 @@ pip install plyer
 pip install pyinstaller
 ```
 
-Then, to compile the app itself, use `compile for windows.bat` for Windows and `compile for macos.sh` for macOS. After compiling, the app can be found in the `dist` folder. On Windows, you can build a setup wizard using Inno Setup, which you can get [here](https://jrsoftware.org/isinfo.php).
+Then, to compile the app itself, use `compile for windows.bat` for Windows and `compile for unix.sh` for macOS and Linux. After compiling, the app can be found in the `dist` folder. On Windows, you can build a setup wizard using Inno Setup, which you can get [here](https://jrsoftware.org/isinfo.php).
 
 After installing that, you can build a setup for Windows using `make windows setup.iss`. The compiled installer can then be found in the `Compiled Installer` directory.
