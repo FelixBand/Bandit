@@ -568,7 +568,7 @@ class MainWindow(QWidget):
                 print(f"Error launching executable: {e}")
 
         elif isMacOS:
-            game_process = subprocess.Popen(['open', '-a', f"{save_path}/{first_folder}/{executable_path}"])
+            game_process = subprocess.Popen(['open', '-a', f"{save_path}/{executable_path}"])
 
         
     def uninstall_game(self):
