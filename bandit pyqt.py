@@ -593,17 +593,18 @@ class MainWindow(QWidget):
         
         if reply == QMessageBox.StandardButton.Yes:
             try:
+                saved_paths.pop(game, None)
+                
+                # Update saved_paths.json
+                with open(saved_paths_file, 'w') as file:
+                    json.dump(saved_paths, file, indent=4)
+                    
                 if os.path.exists(game_path) and not first_folder == None or first_folder != '': # A pretty important check that makes sure it does not delete the parent folder.
                     shutil.rmtree(game_path) # scary
                     print(f"Deleted folder: {game_path}")
                 else:
                     print(f"The path {game_path} does not exist, removing instance from saved_paths.json")
                 # Remove the title from saved_paths.json
-                saved_paths.pop(game, None)
-                
-                # Update saved_paths.json
-                with open(saved_paths_file, 'w') as file:
-                    json.dump(saved_paths, file, indent=4)
 
                 self.progressLabel.setText(f"{game} has been uninstalled.")
             except Exception as e:
