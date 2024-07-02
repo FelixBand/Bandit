@@ -633,6 +633,12 @@ def sync_files():
     sync_file(f"https://thuis.felixband.nl/bandit/{platform.system()}/executable_paths.json", executable_paths_file)
     sync_file(f"https://thuis.felixband.nl/bandit/{platform.system()}/list.txt", list_file)
 
+def check_for_updates():
+    with urllib.request.urlopen("https://api.github.com/repos/FelixBand/Bandit/releases/latest") as response:
+        data = response.read().decode('utf-8')
+        json_data = json.loads(data)
+        print("newest release: " + json_data["name"]) # Access the "name" field from the JSON response
+
 if __name__ == '__main__':
     # Get the directory for application-specific data
     if platform.system() == 'Windows':
@@ -662,6 +668,8 @@ if __name__ == '__main__':
         print(f"Folder already exists: {games_folder}")
 
     sync_files() # Sync redist_paths.json and list.txt from the specified URL
+
+    check_for_updates()
 
     app = QApplication(sys.argv)
     app.setStyle('fusion')
