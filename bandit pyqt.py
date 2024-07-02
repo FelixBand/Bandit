@@ -300,6 +300,9 @@ class MainWindow(QWidget):
                     if not selected_game == self.game_downloading:
                         self.playButton.setEnabled(True)
                         self.uninstallButton.setEnabled(True)
+                    else:
+                        self.playButton.setEnabled(False)
+                        self.uninstallButton.setEnabled(False)
 
                     with open(redist_paths_file, 'r') as redist_file:
                         redist_paths = json.load(redist_file)
