@@ -297,14 +297,13 @@ class MainWindow(QWidget):
             with open(saved_paths_file, 'r') as file:
                 saved_paths = json.load(file)
                 if selected_game in saved_paths:
-                    if self.game_downloading == None: # Make the download button unclickable if a download is already in progress
-                        self.downloadButton.setEnabled(True)
-                    self.playButton.setEnabled(True)
-                    self.uninstallButton.setEnabled(True)
+                    if not selected_game == self.game_downloading:
+                        self.playButton.setEnabled(True)
+                        self.uninstallButton.setEnabled(True)
 
                     with open(redist_paths_file, 'r') as redist_file:
                         redist_paths = json.load(redist_file)
-                        if selected_game in redist_paths:
+                        if selected_game in redist_paths and not selected_game == self.game_downloading: # If the selected game is in redist_paths and not downloading that game:
                             self.installRedistributablesButton.setEnabled(True)
                         else:
                             self.installRedistributablesButton.setEnabled(False)
@@ -315,7 +314,8 @@ class MainWindow(QWidget):
                     else:
                         self.sizeLabel.setText("Game size: Unknown")
                 else:
-                    self.downloadButton.setEnabled(True)
+                    if self.game_downloading == None:
+                        self.downloadButton.setEnabled(True)
                     self.playButton.setEnabled(False)
                     self.uninstallButton.setEnabled(False)
                     self.installRedistributablesButton.setEnabled(False)
