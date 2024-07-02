@@ -18,6 +18,7 @@ from PyQt6.QtCore import QThread, pyqtSignal, Qt
 
 isWindows = platform.system() == 'Windows'
 isMacOS = platform.system() == 'Darwin'
+isLinux = platform.system() == 'Linux'
 
 class OpacityDelegate(QStyledItemDelegate):
     def __init__(self, parent=None):
@@ -566,9 +567,11 @@ class MainWindow(QWidget):
                 game_process = subprocess.Popen([f"{save_path}/{executable_path}"], cwd=os.path.join(save_path, first_folder), shell=True)
             except Exception as e:
                 print(f"Error launching executable: {e}")
-
         elif isMacOS:
             game_process = subprocess.Popen(['open', '-a', f"{save_path}/{executable_path}"])
+        elif isLinux:
+            os.chmod(f"{save_path}/{executable_path}", 0o755)
+            game_process = subprocess.Popen([f"{save_path}/{executable_path}"], cwd=os.path.join(save_path, first_folder))
 
         
     def uninstall_game(self):
@@ -642,10 +645,13 @@ def check_for_updates():
 
 if __name__ == '__main__':
     # Get the directory for application-specific data
+    print(platform.system())
     if platform.system() == 'Windows':
         app_data_dir = os.path.expandvars(r"%userprofile%\\.banditgamedownloader")
     elif platform.system() == 'Darwin':  # macOS
         app_data_dir = os.path.expanduser("~/Library/Application Support/Bandit Game Downloader") # Ensure the directory exists
+    elif platform.system() == 'Linux':
+        app_data_dir = os.path.expanduser("~/.banditgamedownloader")
 
     if not os.path.exists(app_data_dir):
         os.makedirs(app_data_dir)
