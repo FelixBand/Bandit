@@ -190,6 +190,8 @@ class MainWindow(QWidget):
         self.load_items()
         self.selection_changed()  # Update button states based on initial selection
 
+        self.game_downloading = None
+
     def clear_selection(self):
         self.allListWidget.clearSelection()
         self.favoritesListWidget.clearSelection()
@@ -294,7 +296,8 @@ class MainWindow(QWidget):
             with open(saved_paths_file, 'r') as file:
                 saved_paths = json.load(file)
                 if selected_game in saved_paths:
-                    self.downloadButton.setEnabled(True)
+                    if self.game_downloading == None: # Make the download button unclickable if a download is already in progress
+                        self.downloadButton.setEnabled(True)
                     self.playButton.setEnabled(True)
                     self.uninstallButton.setEnabled(True)
 
@@ -428,10 +431,19 @@ class MainWindow(QWidget):
         else:  # Favorites tab is active
             selected_game = self.favoritesListWidget.currentItem().text()
 
+        # Disable the UI while downloading to prevent issues (for now)
+        # self.allListWidget.setEnabled(False)
+        # self.favoritesListWidget.setEnabled(False)
+        # current_index = self.tabWidget.currentIndex()
+        # for i in range(self.tabWidget.count()):
+        #     if i != current_index:
+        #         self.tabWidget.setTabEnabled(i, False)
+
         selected_game_file = getattr(self, selected_game.replace(' ', '_'))
         selected_game_url = f"https://thuis.felixband.nl/bandit/{platform.system()}/{selected_game_file}"
         save_path = QFileDialog.getExistingDirectory(None, "Select Download Location", games_folder)
         if save_path:
+            self.game_downloading = selected_game # This is the currently downloading game title.
             self.downloadButton.setEnabled(False)
             self.cancelButton.setEnabled(True)
             self.thread = DownloadThread(selected_game_url, save_path)
@@ -456,9 +468,10 @@ class MainWindow(QWidget):
         self.uninstallButton.setEnabled(True)
         if hasattr(self, 'thread'):
             save_path = self.thread.save_path
-            selected_game = self.get_selected_game()
             # Remove the partially downloaded file/folder
-            self.delete_game(selected_game)
+            print(self.game_downloading)
+            self.delete_game(self.game_downloading)
+            self.game_downloading = None # Current game being downloaded: None
 
     def update_progress(self, progress):
         progress_int = int(progress)  # Convert progress to an integer
@@ -476,6 +489,8 @@ class MainWindow(QWidget):
             self.progressLabel.setText("Extracting...")
 
     def extraction_complete(self):
+        self.game_downloading = None
+
         self.progressLabel.setText("Done!")
         self.downloadButton.setEnabled(True)
         self.cancelButton.setEnabled(False)
@@ -491,10 +506,10 @@ class MainWindow(QWidget):
             notification_text = f"{selected_game} has successfully installed!"
             
             # Uncomment the notification line if it's fixed or provide an alternative method
-            #try:
-                #self.show_notification(notification_text)  # Check if this works without crashing
-            #except Exception as e:
-                #print(f"Failed to show notification: {e}")
+            try:
+                self.show_notification(notification_text)  # Check if this works without crashing
+            except Exception as e:
+                print(f"Failed to show notification: {e}")
             
             self.uninstallButton.setEnabled(True)
         else:
@@ -517,7 +532,7 @@ class MainWindow(QWidget):
         notification.notify(
             title=notification_title,
             message=text,
-            app_icon="icon.ico",  # Path to the application icon
+            #app_icon="icon.ico",  # Path to the application icon
             timeout=10  # Notification duration in seconds (optional)
         )
 
@@ -585,7 +600,7 @@ class MainWindow(QWidget):
                 # Update saved_paths.json
                 with open(saved_paths_file, 'w') as file:
                     json.dump(saved_paths, file, indent=4)
-                    
+
                 self.progressLabel.setText(f"{game} has been uninstalled.")
             except Exception as e:
                 print(f"An error occurred while uninstalling the game: {e}")
