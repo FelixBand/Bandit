@@ -89,15 +89,11 @@ def get_first_folder_in_path(game_title):
         executable_paths = json.load(file)
         executable_path = executable_paths.get(game_title, '')
 
-    # Check if the path contains slashes
-    if '/' in executable_path:
-        # Split the path by '/'
-        path_components = executable_path.split('/')
-        # Get the first folder in the path
-        first_folder = path_components[0]
+    if '/' in executable_path: # Check if the path contains slashes
+        path_components = executable_path.split('/') # Split the path by '/'
+        first_folder = path_components[0] # Get the first folder in the path
     else:
-        # Return the full path if it doesn't contain slashes
-        first_folder = executable_path
+        first_folder = executable_path # Return the full path if it doesn't contain slashes
 
     return first_folder
 
@@ -235,7 +231,7 @@ class MainWindow(QWidget):
 
         contextMenu.exec(listWidget.mapToGlobal(position))
 
-    def browse_file_location(self, selected_game): # This will open an explorer window and highlight the game folder
+    def browse_file_location(self, selected_game): # This will open an explorer window and highlight the game
         # Load the saved_paths.json file
         with open(saved_paths_file, 'r') as file:
             saved_paths = json.load(file)
