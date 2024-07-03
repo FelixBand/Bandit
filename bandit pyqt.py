@@ -1,6 +1,5 @@
 import sys
-import urllib.parse
-import urllib.request
+import requests
 import json
 import gzip
 import tarfile
@@ -48,15 +47,18 @@ class DownloadThread(QThread):
         self.url = url
         self.save_path = save_path
         self.cancelled = False
+        self.downloaded_bytes = 0
 
     def run(self):
         try:
-            response = urllib.request.urlopen(self.url)
-            total_size = int(response.headers['Content-Length'])
+            response = requests.get(self.url, stream=True, timeout=10)
+            response.raise_for_status()  # Check if the request was successful
+            total_size = int(response.headers.get('Content-Length', 0))
             downloaded_size = 0
             chunk_size = 4096
             start_time = time.time()  # Record start time
-            with tarfile.open(fileobj=response, mode="r:gz") as tar:
+
+            with tarfile.open(fileobj=response.raw, mode="r|gz") as tar:
                 for member in tar:
                     tar.extract(member, self.save_path)
                     downloaded_size += member.size
@@ -655,22 +657,27 @@ class MainWindow(QWidget):
 
 def sync_file(url, local_file):
     try:
-        with urllib.request.urlopen(url, timeout=10) as response:
-            with open(local_file, 'wb') as file:
-                file.write(response.read())
+        response = requests.get(url, timeout=10)
+        response.raise_for_status()  # Check if the request was successful
+        with open(local_file, 'wb') as file:
+            file.write(response.content)
     except Exception as e:
         print(f"An error occurred while syncing {local_file}: {e}")
 
 def sync_files():
-    sync_file(f"https://thuis.felixband.nl/bandit/{platform.system()}/redist_paths.json", redist_paths_file)
-    sync_file(f"https://thuis.felixband.nl/bandit/{platform.system()}/executable_paths.json", executable_paths_file)
-    sync_file(f"https://thuis.felixband.nl/bandit/{platform.system()}/list.txt", list_file)
+    base_url = f"https://thuis.felixband.nl/bandit/{platform.system()}"
+    sync_file(f"{base_url}/redist_paths.json", redist_paths_file)
+    sync_file(f"{base_url}/executable_paths.json", executable_paths_file)
+    sync_file(f"{base_url}/list.txt", list_file)
 
 def check_for_updates():
-    with urllib.request.urlopen("https://api.github.com/repos/FelixBand/Bandit/releases/latest") as response:
-        data = response.read().decode('utf-8')
-        json_data = json.loads(data)
-        print("newest release: " + json_data["name"]) # Access the "name" field from the JSON response
+    try:
+        response = requests.get("https://api.github.com/repos/FelixBand/Bandit/releases/latest", timeout=10)
+        response.raise_for_status()  # Check if the request was successful
+        json_data = response.json()
+        print("newest release: " + json_data["name"])
+    except Exception as e:
+        print(f"An error occurred while checking for updates: {e}")
 
 if __name__ == '__main__':
     # Get the directory for application-specific data
