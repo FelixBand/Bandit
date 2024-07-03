@@ -560,12 +560,10 @@ class MainWindow(QWidget):
 
     def show_notification(self, text):
         # Display desktop notification
-        notification_title = "Bandit - Game Downloader"
         notification.notify(
-            title=notification_title,
+            title = "Download Complete!",
             message=text,
-            #app_icon="icon.ico",  # Path to the application icon
-            timeout=10  # Notification duration in seconds (optional)
+            timeout=5 # displaying time
         )
 
     def play_game(self):
