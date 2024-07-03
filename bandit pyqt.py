@@ -226,14 +226,14 @@ class MainWindow(QWidget):
 
         with open(saved_paths_file, 'r') as saved_paths_file_obj:
             saved_paths = json.load(saved_paths_file_obj)
-            
+
         if selected_game in saved_paths:
             browseAction = contextMenu.addAction("Browse file location")
             browseAction.triggered.connect(lambda: self.browse_file_location(selected_game))
 
         contextMenu.exec(listWidget.mapToGlobal(position))
 
-    def browse_file_location(self, selected_game):
+    def browse_file_location(self, selected_game): # This will open an explorer window and highlight the game folder
         # Load the saved_paths.json file
         with open(saved_paths_file, 'r') as file:
             saved_paths = json.load(file)
