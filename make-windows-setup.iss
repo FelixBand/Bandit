@@ -2,7 +2,7 @@
 ; SEE THE DOCUMENTATION FOR DETAILS ON CREATING INNO SETUP SCRIPT FILES!
 
 #define MyAppName "Bandit - Game Downloader"
-#define MyAppVersion "0.3.0"
+#define MyAppVersion "0.3.1"
 #define MyAppPublisher "Felix Band"
 #define MyAppURL "https://thuis.felixband.nl/"
 #define MyAppExeName "Bandit.exe"
