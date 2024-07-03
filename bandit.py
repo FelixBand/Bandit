@@ -676,11 +676,11 @@ def check_for_updates():
 if __name__ == '__main__':
     # Get the directory for application-specific data
     print(platform.system())
-    if platform.system() == 'Windows':
+    if isWindows:
         app_data_dir = os.path.expandvars(r"%userprofile%\\.banditgamedownloader")
-    elif platform.system() == 'Darwin':  # macOS
+    elif isMacOS:
         app_data_dir = os.path.expanduser("~/Library/Application Support/Bandit Game Downloader") # Ensure the directory exists
-    elif platform.system() == 'Linux':
+    elif isLinux:
         app_data_dir = os.path.expanduser("~/.banditgamedownloader")
 
     if not os.path.exists(app_data_dir):
@@ -709,7 +709,8 @@ if __name__ == '__main__':
     check_for_updates()
 
     app = QApplication(sys.argv)
-    app.setStyle('fusion')
+    if not isMacOS:
+        app.setStyle('fusion')
     mainWindow = MainWindow()
     mainWindow.show()
     sys.exit(app.exec())
