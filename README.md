@@ -5,7 +5,7 @@ With this app, you can download games and extract them on the fly from my dedica
 # Compiling
 
 To compile the app, the dependency Pyinstaller is used.
-Other dependencies are PyQt6; the framework for the GUI, plyer, used to display notifications and requests, for data over HTTP.
+Other dependencies are PyQt6; the framework for the GUI, plyer, used to display notifications and requests, for downloading data over HTTP.
 
 You can get these using pip with the following commands:
 
