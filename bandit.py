@@ -616,8 +616,8 @@ class MainWindow(QWidget):
         # Check if the path is correct and prompt for confirmation
         confirm_message = f"Are you sure you want to uninstall {game}? This will delete: {game_path}"
         reply = QMessageBox.question(self, 'Confirmation', confirm_message, 
-                                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, 
-                                    QMessageBox.StandardButton.No)
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, 
+            QMessageBox.StandardButton.No)
         
         if reply == QMessageBox.StandardButton.Yes:
             try:
