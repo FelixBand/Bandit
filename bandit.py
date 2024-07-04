@@ -727,7 +727,7 @@ if __name__ == '__main__':
     sync_files() # Sync redist_paths.json and list.txt from the specified URL
 
     app = QApplication(sys.argv)
-    if not isMacOS:
+    if not isMacOS: # native macOS GUI looks good :)
         app.setStyle('fusion')
     mainWindow = MainWindow()
     mainWindow.show()
