@@ -18,6 +18,7 @@ from PyQt6.QtCore import QThread, pyqtSignal, Qt
 isWindows = platform.system() == 'Windows'
 isMacOS = platform.system() == 'Darwin'
 isLinux = platform.system() == 'Linux'
+version = "0.3.2"
 
 class OpacityDelegate(QStyledItemDelegate):
     def __init__(self, parent=None):
@@ -100,8 +101,7 @@ def get_first_folder_in_path(game_title):
 class MainWindow(QWidget):
     def __init__(self):
         super().__init__()
-        self.version = "0.3.1"
-        self.setWindowTitle(f"Bandit - Game Downloader v{self.version}")
+        self.setWindowTitle(f"Bandit - Game Downloader v{version}")
         self.setWindowIcon(QIcon("icon.ico"))  # Set the window icon
         self.setGeometry(100, 100, 800, 800)
 
@@ -110,6 +110,8 @@ class MainWindow(QWidget):
         self.load_favorites()
 
         self.initUI()
+
+        check_for_updates()
 
     def initUI(self):
         layout = QVBoxLayout(self)
@@ -669,7 +671,25 @@ def check_for_updates():
         response = requests.get("https://api.github.com/repos/FelixBand/Bandit/releases/latest", timeout=10)
         response.raise_for_status()  # Check if the request was successful
         json_data = response.json()
-        print("newest release: " + json_data["name"])
+        print("newest release: " + json_data["tag_name"])
+        print("current version: " + version)
+        if json_data["tag_name"] > version:
+            reply = QMessageBox.question(None, 'Download update?', f"A new update is available: {json_data["tag_name"]}. You're running version {version}. Would you like to update?", 
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, 
+            QMessageBox.StandardButton.Yes)
+
+            if reply == QMessageBox.StandardButton.Yes:
+                url = "https://github.com/FelixBand/Bandit/releases/latest"
+                
+                if isMacOS:
+                    subprocess.run(["open", url])
+                elif isWindows:
+                    subprocess.run(["start", url], shell=True)
+                elif isLinux:
+                    subprocess.run(["xdg-open", url])
+
+                quit()
+
     except Exception as e:
         print(f"An error occurred while checking for updates: {e}")
 
@@ -705,8 +725,6 @@ if __name__ == '__main__':
         print(f"Folder already exists: {games_folder}")
 
     sync_files() # Sync redist_paths.json and list.txt from the specified URL
-
-    check_for_updates()
 
     app = QApplication(sys.argv)
     if not isMacOS:
