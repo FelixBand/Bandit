@@ -18,7 +18,7 @@ from PyQt6.QtCore import QThread, pyqtSignal, Qt
 isWindows = platform.system() == 'Windows'
 isMacOS = platform.system() == 'Darwin'
 isLinux = platform.system() == 'Linux'
-version = "0.3.2"
+version = "0.4.0"
 
 class OpacityDelegate(QStyledItemDelegate):
     def __init__(self, parent=None):
