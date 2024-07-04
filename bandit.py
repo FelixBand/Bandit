@@ -695,7 +695,7 @@ def check_for_updates():
 
 if __name__ == '__main__':
     # Get the directory for application-specific data
-    print(platform.system())
+    print(f"OS: {platform.system()}")
     if isWindows:
         app_data_dir = os.path.expandvars(r"%userprofile%\\.banditgamedownloader")
     elif isMacOS:
