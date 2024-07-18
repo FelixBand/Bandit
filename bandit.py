@@ -683,7 +683,7 @@ def check_for_updates():
         print("newest release: " + json_data["tag_name"])
         print("current version: " + version)
         if json_data["tag_name"] > version:
-            reply = QMessageBox.question(None, 'Download update?', "A new update is available: " + json_data["tag_name"] + ". You're running version" + version + ". Would you like to update?", 
+            reply = QMessageBox.question(None, 'Download update?', "A new update is available: " + json_data["tag_name"] + ". You're running version " + version + ". Would you like to update?", 
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, 
             QMessageBox.StandardButton.Yes)
 
