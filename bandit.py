@@ -18,7 +18,7 @@ from PyQt6.QtCore import QThread, pyqtSignal, Qt
 isWindows = platform.system() == 'Windows'
 isMacOS = platform.system() == 'Darwin'
 isLinux = platform.system() == 'Linux'
-version = "0.4.0"
+version = "0.4.1"
 
 class OpacityDelegate(QStyledItemDelegate):
     def __init__(self, parent=None):
@@ -245,14 +245,23 @@ class MainWindow(QWidget):
             first_folder = get_first_folder_in_path(selected_game)
             full_path = os.path.join(folder_path, first_folder)
             
-            if isMacOS:  # macOS
-                subprocess.run(["open", "-R", full_path])
-            elif isWindows:  # Windows
-                subprocess.run(["explorer", "/select,", full_path])
-            elif isLinux:  # Linux
-                subprocess.run(["xdg-open", full_path])
-        else:
-            print(f"Path for '{selected_game}' not found in {saved_paths_file}")
+            if isWindows: # fuck Windows.
+                full_path = os.path.normpath(os.path.abspath(full_path))
+
+            print(full_path)
+            try:
+                if isMacOS: # macOS
+                    subprocess.run(["open", "-R", full_path])
+                elif isWindows:  # Windows
+                    os.startfile(full_path)
+                elif isLinux: # Linux
+                    subprocess.run(["xdg-open", full_path])
+            except:
+                print("Oops! Can't find that directory! :(")
+                msgBox = QMessageBox()
+                msgBox.setWindowTitle("Directory not found.")
+                msgBox.setText("Game directory not found. It may have been moved or deleted.")
+                msgBox.exec()
 
     def toggle_favorite(self, game, favorite):
         if favorite:
