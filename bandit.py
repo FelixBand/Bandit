@@ -18,7 +18,7 @@ from PyQt6.QtCore import QThread, pyqtSignal, Qt
 isWindows = platform.system() == 'Windows'
 isMacOS = platform.system() == 'Darwin'
 isLinux = platform.system() == 'Linux'
-version = "0.4.1"
+version = "0.5.0"
 
 class OpacityDelegate(QStyledItemDelegate):
     def __init__(self, parent=None):
@@ -43,10 +43,11 @@ class DownloadThread(QThread):
     progressChanged = pyqtSignal(float)
     extractionComplete = pyqtSignal()
 
-    def __init__(self, url, save_path):
+    def __init__(self, url, save_path, total_size):
         super().__init__()
         self.url = url
         self.save_path = save_path
+        self.total_size = total_size
         self.cancelled = False
         self.downloaded_bytes = 0
 
@@ -54,18 +55,15 @@ class DownloadThread(QThread):
         try:
             response = requests.get(self.url, stream=True, timeout=10)
             response.raise_for_status()  # Check if the request was successful
-            total_size = int(response.headers.get('Content-Length', 0))
             downloaded_size = 0
-            chunk_size = 4096
-            start_time = time.time()  # Record start time
 
             with tarfile.open(fileobj=response.raw, mode="r|gz") as tar:
                 for member in tar:
                     tar.extract(member, self.save_path)
                     downloaded_size += member.size
-                    percentage = min((downloaded_size / total_size) * 100, 100)  # Ensure progress doesn't exceed 100%
+                    percentage = min((downloaded_size / self.total_size) * 100, 100)  # Ensure progress doesn't exceed 100%
 
-                    print(f"Downloaded {downloaded_size} of {total_size}")
+                    print(f"Downloaded {downloaded_size} of {self.total_size}")
 
                     self.progressChanged.emit(percentage)
 
@@ -84,6 +82,14 @@ class DownloadThread(QThread):
             self.extractionComplete.emit()
         except Exception as e:
             print(f"An error occurred: {e}")
+
+def human_readable_size(size_in_bytes):
+    if size_in_bytes >= 1_000_000_000:  # Convert to GB if size is 1 GB or more
+        size_in_gb = size_in_bytes / 1_000_000_000
+        return f"{size_in_gb:.2f} GB"
+    else:  # Convert to MB otherwise
+        size_in_mb = size_in_bytes / 1_000_000
+        return f"{size_in_mb:.2f} MB"
 
 def get_first_folder_in_path(game_title):
     with open(executable_paths_file, 'r') as file:
@@ -330,8 +336,6 @@ class MainWindow(QWidget):
     def selection_changed(self):
         selected_game = self.get_selected_game()
         if selected_game:
-            self.update_size_label(selected_game)
-
             with open(saved_paths_file, 'r') as file:
                 saved_paths = json.load(file)
                 if selected_game in saved_paths:
@@ -345,22 +349,20 @@ class MainWindow(QWidget):
 
                     with open(redist_paths_file, 'r') as redist_file:
                         redist_paths = json.load(redist_file)
-                        if selected_game in redist_paths and not selected_game == self.game_downloading: # If the selected game is in redist_paths and not downloading that game:
+                        if selected_game in redist_paths and not selected_game == self.game_downloading:
                             self.installRedistributablesButton.setEnabled(True)
                         else:
                             self.installRedistributablesButton.setEnabled(False)
 
-                    game_size = self.get_game_size(selected_game)
-                    if game_size:
-                        self.sizeLabel.setText(f"Game size: {game_size}")
-                    else:
-                        self.sizeLabel.setText("Game size: Unknown")
                 else:
-                    if self.game_downloading == None:
+                    if self.game_downloading is None:
                         self.downloadButton.setEnabled(True)
                     self.playButton.setEnabled(False)
                     self.uninstallButton.setEnabled(False)
                     self.installRedistributablesButton.setEnabled(False)
+
+            # Update the size label for the selected game
+            self.update_size_label(selected_game)
         else:
             self.downloadButton.setEnabled(False)
             self.playButton.setEnabled(False)
@@ -379,31 +381,27 @@ class MainWindow(QWidget):
         return None
 
     def update_size_label(self, game_title):
-        # Get the size of the selected game
         game_size = self.get_game_size(game_title)
-        # Update the size label
-        self.sizeLabel.setText(f"Game size: {game_size}")
+        if game_size != "Unknown":
+            readable_size = human_readable_size(game_size)
+            self.sizeLabel.setText(f"Game size: {readable_size}")
+        else:
+            self.sizeLabel.setText("Game size: Unknown")
 
     def get_game_size(self, game_title):
         try:
-            # Try to read the list from the local file
             with open(list_file, 'r') as file:
                 items = file.read().split('\n')
-                items = [item.split('|') for item in items if item.strip()]  # Split by pipe
-                # Print all items for debugging
-                #print("All items in list.txt:")
-                #for item in items:
-                    #print(item)
-                # Search for the game title and return its size
+                items = [item.split('|') for item in items if item.strip()]
                 for item in items:
                     if item[0] == game_title:
                         if len(item) >= 3:
-                            return item[2]  # Return the size if available
+                            return int(item[2])  # Ensure the size is returned as an integer
                         else:
-                            return "Unknown"  # Return "Unknown" if size is missing
+                            return "Unknown"
         except Exception as e:
             print(f"An error occurred while retrieving the size of {game_title}: {e}")
-            return "Unknown"  # Return "Unknown" if an error occurs
+            return "Unknown"
         
     def update_installed_games(self):  
         try:
@@ -474,22 +472,19 @@ class MainWindow(QWidget):
         else:  # Favorites tab is active
             selected_game = self.favoritesListWidget.currentItem().text()
 
-        # Disable the UI while downloading to prevent issues (for now)
-        # self.allListWidget.setEnabled(False)
-        # self.favoritesListWidget.setEnabled(False)
-        # current_index = self.tabWidget.currentIndex()
-        # for i in range(self.tabWidget.count()):
-        #     if i != current_index:
-        #         self.tabWidget.setTabEnabled(i, False)
-
         selected_game_file = getattr(self, selected_game.replace(' ', '_'))
         selected_game_url = f"https://thuis.felixband.nl/bandit/{platform.system()}/{selected_game_file}"
         save_path = QFileDialog.getExistingDirectory(None, "Select Download Location", games_folder)
         if save_path:
-            self.game_downloading = selected_game # This is the currently downloading game title.
+            game_size = self.get_game_size(selected_game)
+            if game_size == "Unknown":
+                print("Game size is unknown. Cannot proceed with the download.")
+                return
+
+            self.game_downloading = selected_game  # This is the currently downloading game title.
             self.downloadButton.setEnabled(False)
             self.cancelButton.setEnabled(True)
-            self.thread = DownloadThread(selected_game_url, save_path)
+            self.thread = DownloadThread(selected_game_url, save_path, game_size)
             self.thread.progressChanged.connect(self.update_progress)
             self.thread.extractionComplete.connect(self.extraction_complete)
             self.thread.downloadCancelled.connect(self.on_download_cancelled)
@@ -504,7 +499,8 @@ class MainWindow(QWidget):
                 file.seek(0)
                 json.dump(data, file, indent=4)
 
-        self.update_installed_games() # Update opacities
+        self.update_installed_games()  # Update opacities
+
 
     def on_download_cancelled(self):
         self.downloadButton.setEnabled(True)
