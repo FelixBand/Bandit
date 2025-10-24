@@ -182,22 +182,32 @@ def download_and_play_game():
             return
         
         executable_relative_path = executable_paths[game_id]
+        print(executable_relative_path)
         game_install_path = saved_paths[game_id]
+        print(game_install_path)
         game_exec_full_path = os.path.join(game_install_path, executable_relative_path)
         print(game_exec_full_path)
+        print("IMPORTANT" + os.path.join(game_install_path, os.path.dirname(executable_relative_path)))
         if not os.path.exists(game_exec_full_path):
             QMessageBox.critical(window, "Error", f"Executable for {display_name} not found at expected location:\n{game_exec_full_path}")
             return
 
         try:
             if isWindows:
-                os.startfile(game_exec_full_path)
+                # cwd needs to be the directory of the executable
+                # This needs to be the folder in which the executable file is located. So FOR EXAMPLE, in the case of The Sims 4 that would mean:
+                # "The Sims 4/Game/Bin/TS4_x64.exe"
+                # So the "Bin" folder.
+                # This ensures the game starts correctly and any DLL injections (mods) work properly.
+                try:
+                    game_process = subprocess.Popen([f"{game_exec_full_path}"], cwd=os.path.join(game_install_path, os.path.dirname(executable_relative_path)), shell=True)
+                except Exception as e:
+                    print(f"Error launching executable: {e}")
             elif isMacOS or isLinux:
                 subprocess.Popen([game_exec_full_path], cwd=os.path.dirname(game_exec_full_path))
             print(f"Launched {display_name} successfully.")
         except Exception as e:
             QMessageBox.critical(window, "Launch Failed", f"Failed to launch {display_name}: {e}")
-
         return
 
     # If it is currently downloading, cancel the download
@@ -211,15 +221,20 @@ def download_and_play_game():
         return
 
     # determine default download path by OS
+    # Make the folder if it doesn't exist
     if isWindows:
+        os.makedirs(os.path.join(os.path.expandvars("%USERPROFILE%"), ".banditgamelauncher", "games"), exist_ok=True)
         download_path = os.path.join(os.path.expandvars("%USERPROFILE%"), ".banditgamelauncher", "games")
     elif isMacOS:
+        os.makedirs(os.path.join(os.path.expanduser("~"), "Bandit Game Launcher", "games"), exist_ok=True)
         download_path = os.path.join(os.path.expanduser("~"), "Bandit Game Launcher", "games")
     elif isLinux:
+        os.makedirs(os.path.join(os.path.expanduser("~"), ".banditgamelauncher", "games"), exist_ok=True)
         download_path = os.path.join(os.path.expanduser("~"), ".banditgamelauncher", "games")
 
     # Ask user where to save the game
-    selected_parent = QFileDialog.getExistingDirectory(window, "Select Download Directory", os.path.dirname(download_path))
+    # Default is the download_path determined above in "games" folder.
+    selected_parent = QFileDialog.getExistingDirectory(window, "Select Download Directory", download_path)
     if not selected_parent:
         currently_downloading = False
         return
