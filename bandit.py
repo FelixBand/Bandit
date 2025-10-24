@@ -86,8 +86,6 @@ game_list_widget = QListWidget()
 # Make the list 50% opacity, for games that are not downloaded yet.
 # We check saved_paths.json to see if the game is downloaded.
 
-# CODE GOES HERE
-
 # Now we populate the list with only display names.
 for game in game_list:
     display_name = game.split('|')[0]
