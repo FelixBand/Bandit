@@ -5,3 +5,5 @@ Bandit.spec
 Compiled Installer
 Thumbs.db
 sign
+bandit.py
+saved_paths.json

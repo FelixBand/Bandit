@@ -278,8 +278,10 @@ def download_and_play_game():
                     game_process = subprocess.Popen([f"{game_exec_full_path}"], cwd=os.path.join(game_install_path, os.path.dirname(executable_relative_path)), shell=True)
                 except Exception as e:
                     print(f"Error launching executable: {e}")
-            elif isMacOS or isLinux:
+            elif isLinux:
                 subprocess.Popen([game_exec_full_path], cwd=os.path.dirname(game_exec_full_path))
+            elif isMacOS:
+                game_process = subprocess.Popen(['open', '-a', f"{game_exec_full_path}"])
             print(f"Launched {display_name} successfully.")
         except Exception as e:
             QMessageBox.critical(window, "Launch Failed", f"Failed to launch {display_name}: {e}")
