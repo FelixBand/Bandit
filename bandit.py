@@ -217,7 +217,7 @@ def on_game_selected():
     else:
         download_play_button.setEnabled(True)
 
-    size_in_bytes = int(size_in_bytes)
+    size_in_bytes = int(size_in_bytes) # Tell the user the size of the game (uncompressed)
     if size_in_bytes >= 1_000_000_000:  # 1 GB
         size_in_gb = size_in_bytes / 1_000_000_000
         size_label.setText(f"Size of {display_name}: {size_in_gb:.2f} GB")
@@ -367,7 +367,17 @@ def download_game(game_id, download_path):
         with requests.get(url, stream=True, timeout=(5, 30)) as response:
             _current_download_response = response
             if response.status_code == 200:
-                total_size = int([game.split('|')[2] for game in game_list if game.split('|')[1] == game_id][0])
+                # Try to fetch the actual Content-Length from the server (compressed .tar.gz size)
+                total_size = int(response.headers.get("Content-Length", 0))
+
+                # Fallback if Content-Length is missing or invalid
+                if not total_size:
+                    try:
+                        # Fall back to the size listed in list.txt
+                        total_size = int([game.split('|')[2] for game in game_list if game.split('|')[1] == game_id][0])
+                    except Exception:
+                        total_size = 0
+
                 downloaded_size = 0
                 chunk_size = 8192  # 8 KB
 
@@ -410,6 +420,7 @@ def download_game(game_id, download_path):
                     downloaded_size += n
                     if total_size:
                         percent_done = (downloaded_size / total_size) * 100
+                        print(f"{downloaded_size} of {total_size}")
                         percentage_label.setText(f"Downloading {game_id}: {percent_done:.2f}% complete")
                     else:
                         percentage_label.setText(f"Downloading {game_id}: {downloaded_size} bytes")
