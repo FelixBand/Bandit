@@ -10,12 +10,13 @@ import time
 import platform
 import shutil
 import ntpath
+import webbrowser
 from html.parser import HTMLParser
 from urllib.parse import urljoin, urlparse, unquote, quote
 from plyer import notification
-from PyQt6.QtGui import QIcon
+from PyQt6.QtGui import QIcon, QFont
 from PyQt6.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout, QListWidget, QPushButton, QLabel, QFileDialog, QMessageBox, QTabWidget, QMenu, QGraphicsOpacityEffect, QStyledItemDelegate 
-from PyQt6.QtCore import QThread, pyqtSignal, Qt
+from PyQt6.QtCore import QThread, pyqtSignal, Qt, QTimer
 
 isWindows = platform.system() == 'Windows'
 isMacOS = platform.system() == 'Darwin'
@@ -37,28 +38,52 @@ window.setGeometry(100, 100, 800, 600)
 layout = QVBoxLayout()
 window.setLayout(layout)
 
+class OpacityDelegate(QStyledItemDelegate):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.installed_games = set()  # use a set for faster lookups
+
+    def paint(self, painter, option, index):
+        game_title = index.data(Qt.ItemDataRole.DisplayRole)
+        if game_title in self.installed_games:
+            painter.setOpacity(1.0)  # Fully opaque for installed
+        else:
+            painter.setOpacity(0.4)  # 40% opacity for not installed
+
+        super().paint(painter, option, index)
+        painter.setOpacity(1.0)  # Reset opacity for next paint
+
+    def set_installed_games(self, games):
+        self.installed_games = set(games)
+
 # Make list of games downloaded from https://thuis.felixband.nl/bandit/{OS}/list.txt
 # {OS} is Windows, Linux, or Darwin
 # Entry of list.txt is one game per line, and looks as such:
 # Display Name|game_id|Size in bytes (number)
 
+def _fetch_remote(path, as_json=False, timeout=10, default=None):
+    url = f"https://thuis.felixband.nl/bandit/{OS}/{path}"
+    try:
+        resp = requests.get(url, timeout=timeout)
+        resp.raise_for_status()
+        if as_json:
+            return resp.json()
+        # return non-empty lines for plain text lists
+        return [line for line in resp.text.splitlines() if line.strip()]
+    except Exception as e:
+        print(f"Failed fetching {url}: {e}")
+        if default is not None:
+            return default
+        return {} if as_json else []
+
 def download_game_list():
-    url = f"https://thuis.felixband.nl/bandit/{OS}/list.txt"
-    response = requests.get(url)
-    if response.status_code == 200:
-        game_list = response.text.splitlines()
-        return game_list
-    return []
+    return _fetch_remote("list.txt", as_json=False, default=[])
 
 def download_executable_paths():
-    url = f"https://thuis.felixband.nl/bandit/{OS}/executable_paths.json"
-    response = requests.get(url)
-    if response.status_code == 200:
-        try:
-            executable_paths = response.json()
-            return executable_paths
-        except Exception:
-            return {}
+    return _fetch_remote("executable_paths.json", as_json=True, default={})
+
+def download_prereq_paths():
+    return _fetch_remote("prereq_paths.json", as_json=True, default={})
 
 # Make a new saved_paths.json file if it doesn't exist
 saved_paths_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "saved_paths.json")
@@ -82,6 +107,29 @@ executable_paths = download_executable_paths()
 game_list = download_game_list()
 game_list = sort_game_list(game_list)
 game_list_widget = QListWidget()
+
+font = QFont()
+if isMacOS:
+    font.setPointSize(16)
+else:
+    font.setPointSize(12)
+game_list_widget.setFont(font)
+
+# Create and assign delegate
+delegate = OpacityDelegate(game_list_widget)
+game_list_widget.setItemDelegate(delegate)
+
+def update_installed_opacity():
+    """Refresh which games are shown as installed (100% opacity)."""
+    installed_display_names = [
+        game.split('|')[0]
+        for game in game_list
+        if game.split('|')[1] in saved_paths
+    ]
+    delegate.set_installed_games(installed_display_names)
+    game_list_widget.viewport().update()
+
+update_installed_opacity()
 
 # Make the list 50% opacity, for games that are not downloaded yet.
 # We check saved_paths.json to see if the game is downloaded.
@@ -113,6 +161,33 @@ currently_downloading = False
 download_cancel_requested = False
 _current_download_response = None
 
+def check_for_updates():
+    try:
+        response = requests.get("https://api.github.com/repos/FelixBand/Bandit/releases/latest", timeout=10)
+        response.raise_for_status()  # Check if the request was successful
+        json_data = response.json()
+        print("newest release: " + json_data["tag_name"])
+        print("current version: " + version)
+        if json_data["tag_name"] > version:
+            reply = QMessageBox.question(None, 'Download update?', "A new update is available: " + json_data["tag_name"] + ". You're running version " + version + ". Would you like to update?", 
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, 
+            QMessageBox.StandardButton.Yes)
+
+            if reply == QMessageBox.StandardButton.Yes:
+                url = "https://github.com/FelixBand/Bandit/releases/latest"
+                try:
+                    webbrowser.open(url, new=2)  # open in a new tab if possible
+                except Exception:
+                    pass
+                # give the browser a short moment to start before quitting the app
+                QTimer.singleShot(500, app.quit)
+                return
+
+    except Exception as e:
+        print(f"An error occurred while checking for updates: {e}")
+
+check_for_updates()
+
 # When a game is selected, show its size in GB, unless under 1 GB, then show in MB.
 def on_game_selected():
     # Now we check if the selected game is downloaded or not, and change the download/play button text accordingly.
@@ -143,11 +218,11 @@ def on_game_selected():
         download_play_button.setEnabled(True)
 
     size_in_bytes = int(size_in_bytes)
-    if size_in_bytes >= 1_073_741_824:  # 1 GB
-        size_in_gb = size_in_bytes / 1_073_741_824
+    if size_in_bytes >= 1_000_000_000:  # 1 GB
+        size_in_gb = size_in_bytes / 1_000_000_000
         size_label.setText(f"Size of {display_name}: {size_in_gb:.2f} GB")
     else:
-        size_in_mb = size_in_bytes / 1_048_576
+        size_in_mb = size_in_bytes / 1_000_000
         size_label.setText(f"Size of {display_name}: {size_in_mb:.2f} MB")
 
 game_list_widget.currentRowChanged.connect(on_game_selected)
@@ -281,6 +356,7 @@ def download_and_play_game():
     currently_downloading_game = ""
     # refresh UI state after finishing
     on_game_selected()
+    update_installed_opacity()
 
 def download_game(game_id, download_path):
     global download_cancel_requested, _current_download_response, currently_downloading_game, currently_downloading
@@ -397,10 +473,100 @@ def cancel_download(game_id):
     QApplication.processEvents()
 
 def uninstall_game():
-    # This should uninstall the currently selected game.
-    # It should show a confirmation dialog first.
-    return
+    selected_game_index = game_list_widget.currentRow()
+    if selected_game_index == -1:
+        QMessageBox.warning(window, "No Game Selected", "Please select a game to uninstall.")
+        return
+    
+    selected_game_entry = game_list[selected_game_index]
+    display_name, game_id, size_in_bytes = selected_game_entry.split('|')
 
+    if game_id not in saved_paths:
+        QMessageBox.warning(window, "Not Installed", f"{display_name} is not installed.")
+        return
+
+    if game_id not in executable_paths:
+        QMessageBox.critical(window, "Error", f"Executable path for {display_name} not found.")
+        return
+
+    game_install_path = saved_paths[game_id]
+    executable_relative_path = executable_paths[game_id]
+
+    # Normalize and sanitize the executable path
+    normalized_path = os.path.normpath(executable_relative_path).lstrip(os.sep).lstrip("\\")
+    parts = normalized_path.split(os.sep) if os.sep in normalized_path else normalized_path.split("\\")
+    first_folder = parts[0] if parts else ""
+
+    # Prevent malformed paths
+    if first_folder in ("..", "", ".", "/", "\\"):
+        QMessageBox.critical(window, "Unsafe Path", f"Refusing to uninstall {display_name}: unsafe path detected.")
+        return
+
+    # Resolve absolute paths
+    base_path = os.path.realpath(game_install_path)
+    uninstall_path = os.path.realpath(os.path.join(base_path, first_folder))
+
+    # Safety: don't allow uninstall if base_path is a root drive or filesystem root
+    def is_root_path(p):
+        ap = os.path.abspath(p)
+        drive, tail = os.path.splitdrive(ap)
+        return (tail == os.sep) or (tail in ("\\", "/")) or (ap == os.sep)
+
+    if is_root_path(base_path):
+        QMessageBox.critical(window, "Unsafe Uninstall", "Refusing to uninstall from a system/root location.")
+        return
+
+    # Ensure uninstall_path is inside game_install_path using commonpath
+    try:
+        if os.path.commonpath([base_path, uninstall_path]) != base_path:
+            QMessageBox.critical(window, "Unsafe Uninstall", "Uninstall path escapes the game directory. Aborting for safety.")
+            return
+    except Exception:
+        QMessageBox.critical(window, "Unsafe Uninstall", "Unable to validate uninstall path. Aborting for safety.")
+        return
+
+    # If the installation subpath does not exist, still remove the saved_paths entry so user can clear the listing.
+    if not os.path.exists(uninstall_path):
+        # remove entry and persist
+        try:
+            if game_id in saved_paths:
+                del saved_paths[game_id]
+                with open(saved_paths_file, 'w') as f:
+                    json.dump(saved_paths, f, indent=2)
+            QMessageBox.information(window, "Uninstalled", f"No installation folder found for {display_name}.\nRemoved from launcher records.")
+            on_game_selected()
+            update_installed_opacity()
+        except Exception as e:
+            QMessageBox.critical(window, "Error", f"Failed to remove saved path for {display_name}:\n{e}")
+        return
+
+    # Confirm with user before removing real files
+    confirm = QMessageBox.question(
+        window,
+        "Confirm Uninstall",
+        f"Are you sure you want to uninstall {display_name}?\n\nThis will delete:\n{uninstall_path}",
+        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+    )
+
+    if confirm != QMessageBox.StandardButton.Yes:
+        return
+
+    try:
+        shutil.rmtree(uninstall_path)
+        # Remove from saved_paths and update JSON
+        if game_id in saved_paths:
+            del saved_paths[game_id]
+            with open(saved_paths_file, 'w') as f:
+                json.dump(saved_paths, f, indent=2)
+
+        QMessageBox.information(window, "Uninstalled", f"{display_name} has been uninstalled successfully.")
+        on_game_selected()
+        update_installed_opacity()
+
+    except Exception as e:
+        QMessageBox.critical(window, "Uninstall Failed", f"Failed to uninstall {display_name}:\n{e}")
+
+uninstall_button.clicked.connect(uninstall_game)
 
 # Show the window
 window.show()
