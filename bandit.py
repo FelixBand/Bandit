@@ -26,7 +26,7 @@ OS = platform.system()
 
 #OS = "Windows"
 
-version = "0.6.0"
+version = "1.0.0"
 
 # Make a window
 app = QApplication(sys.argv)
@@ -269,7 +269,7 @@ def download_and_play_game():
         
         # If the game is run for the first time, install prerequisites automatically.
         # This is done by checking if a file called "prerequisites_installed.txt" exists in the game folder.
-        prereq_flag_file = os.path.join(game_install_path, "prerequisites_installed.txt")
+        prereq_flag_file = os.path.join(game_install_path, os.path.dirname(executable_relative_path), "prerequisites_installed.txt")
         if not os.path.exists(prereq_flag_file):
             print(f"Installing prerequisites for {display_name}...")
             install_prerequisites()
@@ -435,9 +435,9 @@ def download_game(game_id, download_path):
                     if total_size:
                         percent_done = (downloaded_size / total_size) * 100
                         print(f"{downloaded_size} of {total_size}")
-                        percentage_label.setText(f"Downloading {game_id}: {percent_done:.2f}% complete")
+                        percentage_label.setText(f"Downloading {display_name}: {percent_done:.2f}% complete")
                     else:
-                        percentage_label.setText(f"Downloading {game_id}: {downloaded_size} bytes")
+                        percentage_label.setText(f"Downloading {display_name}: {downloaded_size} bytes")
                     # Make UI update immediately
                     QApplication.processEvents()
 
@@ -593,31 +593,6 @@ def uninstall_game():
     except Exception as e:
         QMessageBox.critical(window, "Uninstall Failed", f"Failed to uninstall {display_name}:\n{e}")
 
-# Here will come the "install prerequisites" button and its logic.
-# How it works is, the prereq_paths.json file contains a mapping of game_id to the paths of prerequisite installers.
-# For example:
-# {
-#     "GTAIV": [
-#         {
-#             "path": "/Installers/DirectX_jun2008/DXSetup.exe",
-#             "command": "/silent"
-#         },
-#         {
-#             "path": "/Installers/DirectX_Mar2009/DXSetup.exe",
-#             "command": "/silent"
-#         },
-#         {
-#             "path": "/Installers/vcredist_x86.exe",
-#             "command": "/q"
-#         },
-#         {
-#             "path": "/Installers/XLiveUpdate.msi",
-#             "command": "/passive"
-#         }
-#     ],
-#     ...
-# }
-
 # When the user clicks the "Install Prerequisites" button, we check if the selected game has any prerequisites listed.
 # If so, we download and run each installer with the specified command line arguments.
 # The path is of course the path to the game in saved_paths.json + the first folder of the executable path + the prereq path.
@@ -649,7 +624,7 @@ def install_prerequisites():
         QMessageBox.critical(window, "Error", f"Executable path for {display_name} not found.")
         return
 
-    # Determine the first folder in the game's relative path (usually where installers are)
+    # Get the first folder name from the executable path (e.g., "RaceDriver3")
     normalized_path = os.path.normpath(executable_relative_path).lstrip(os.sep).lstrip("\\")
     parts = normalized_path.split(os.sep) if os.sep in normalized_path else normalized_path.split("\\")
     first_folder = parts[0] if parts else ""
@@ -663,7 +638,6 @@ def install_prerequisites():
 
     prereqs = prereq_paths[game_id]
 
-    # Confirm with user
     reply = QMessageBox.question(
         window,
         "Install Prerequisites",
@@ -677,55 +651,53 @@ def install_prerequisites():
     QApplication.processEvents()
 
     for prereq in prereqs:
-        rel_path = prereq.get("path")
+        rel_path = prereq.get("path", "")
         cmd_args = prereq.get("command", "")
         if not rel_path:
-            print(f"Skipping malformed prereq entry: {prereq}")
             continue
 
-        installer_path = os.path.join(game_base_folder, rel_path.lstrip("/").lstrip("\\"))
-        installer_path = os.path.realpath(installer_path)
+        full_path = os.path.join(game_base_folder, rel_path.lstrip("/").lstrip("\\"))
+        full_path = os.path.realpath(full_path)
 
-        # Safety: ensure installer_path is still within game_base_folder
+        # Safety check: prevent directory traversal
         try:
-            if os.path.commonpath([game_base_folder, installer_path]) != game_base_folder:
-                QMessageBox.critical(window, "Unsafe Installer Path", f"Skipping unsafe path: {installer_path}")
+            if os.path.commonpath([game_base_folder, full_path]) != game_base_folder:
+                QMessageBox.warning(window, "Unsafe Path", f"Skipping unsafe path: {full_path}")
                 continue
         except Exception:
-            QMessageBox.critical(window, "Unsafe Installer Path", f"Could not validate path: {installer_path}")
+            QMessageBox.warning(window, "Unsafe Path", f"Could not validate path: {full_path}")
             continue
 
-        if not os.path.exists(installer_path):
-            QMessageBox.warning(window, "Missing Installer", f"Installer not found:\n{installer_path}")
+        if not os.path.exists(full_path):
+            QMessageBox.warning(window, "Missing Installer", f"Installer not found:\n{full_path}")
             continue
 
-        percentage_label.setText(f"Running: {os.path.basename(installer_path)}")
+        installer_dir = os.path.dirname(full_path)
+        percentage_label.setText(f"Running: {os.path.basename(full_path)}")
         QApplication.processEvents()
 
         try:
-            if isWindows:
-                # Use ShellExecute to request elevation
-                import ctypes
-                try:
-                    ctypes.windll.shell32.ShellExecuteW(
-                        None, "runas", installer_path, cmd_args, os.path.dirname(installer_path), 1
-                    )
-                except Exception as e:
-                    QMessageBox.warning(window, "Elevation Failed", f"Could not elevate for {os.path.basename(installer_path)}:\n{e}")
-                    subprocess.Popen([installer_path] + cmd_args.split(), cwd=os.path.dirname(installer_path))
-            else:
-                # macOS/Linux — just execute
-                subprocess.Popen([installer_path] + cmd_args.split(), cwd=os.path.dirname(installer_path))
+            subprocess.run(
+                [full_path] + cmd_args.split(),
+                cwd=installer_dir,
+                shell=True,
+                check=True
+            )
+            print(f"Successfully installed: {full_path}")
+        except subprocess.CalledProcessError as e:
+            print(f"Failed to install: {full_path} -> {e}")
+            QMessageBox.warning(window, "Prerequisite Failed", f"Failed to run {os.path.basename(full_path)}:\n{e}")
         except Exception as e:
-            QMessageBox.critical(window, "Installation Failed", f"Error running {os.path.basename(installer_path)}:\n{e}")
-            continue
+            print(f"Error launching {full_path}: {e}")
+            QMessageBox.warning(window, "Prerequisite Error", f"Error launching {os.path.basename(full_path)}:\n{e}")
 
-        # Wait a bit between installers to avoid overlapping UI
         time.sleep(1)
         QApplication.processEvents()
 
     percentage_label.setText(f"Finished installing prerequisites for {display_name}.")
     QMessageBox.information(window, "Done", f"All prerequisites for {display_name} have been executed.")
+
+
 
 
 uninstall_button.clicked.connect(uninstall_game)
