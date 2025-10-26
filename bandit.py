@@ -579,6 +579,141 @@ def uninstall_game():
     except Exception as e:
         QMessageBox.critical(window, "Uninstall Failed", f"Failed to uninstall {display_name}:\n{e}")
 
+# Here will come the "install prerequisites" button and its logic.
+# How it works is, the prereq_paths.json file contains a mapping of game_id to the paths of prerequisite installers.
+# For example:
+# {
+#     "GTAIV": [
+#         {
+#             "path": "/Installers/DirectX_jun2008/DXSetup.exe",
+#             "command": "/silent"
+#         },
+#         {
+#             "path": "/Installers/DirectX_Mar2009/DXSetup.exe",
+#             "command": "/silent"
+#         },
+#         {
+#             "path": "/Installers/vcredist_x86.exe",
+#             "command": "/q"
+#         },
+#         {
+#             "path": "/Installers/XLiveUpdate.msi",
+#             "command": "/passive"
+#         }
+#     ],
+#     ...
+# }
+
+# When the user clicks the "Install Prerequisites" button, we check if the selected game has any prerequisites listed.
+# If so, we download and run each installer with the specified command line arguments.
+# The path is of course the path to the game in saved_paths.json + the first folder of the executable path + the prereq path.
+# So for example, "C:/Games/GTAIV/Installers/DirectX_jun2008/DXSetup.exe"
+# The prereqs should run in order as listed in the JSON file.
+# Preferrably on Windows, Bandit asks for admin rights once in order to run all the installers without having to ask again.
+
+def install_prerequisites():
+    selected_game_index = game_list_widget.currentRow()
+    if selected_game_index == -1:
+        QMessageBox.warning(window, "No Game Selected", "Please select a game first.")
+        return
+
+    selected_game_entry = game_list[selected_game_index]
+    display_name, game_id, _ = selected_game_entry.split('|')
+
+    if game_id not in saved_paths:
+        QMessageBox.warning(window, "Game Not Installed", f"{display_name} must be installed before installing prerequisites.")
+        return
+
+    prereq_paths = download_prereq_paths()
+    if game_id not in prereq_paths or not prereq_paths[game_id]:
+        QMessageBox.information(window, "No Prerequisites", f"No prerequisites listed for {display_name}.")
+        return
+
+    game_install_path = saved_paths[game_id]
+    executable_relative_path = executable_paths.get(game_id, "")
+    if not executable_relative_path:
+        QMessageBox.critical(window, "Error", f"Executable path for {display_name} not found.")
+        return
+
+    # Determine the first folder in the game's relative path (usually where installers are)
+    normalized_path = os.path.normpath(executable_relative_path).lstrip(os.sep).lstrip("\\")
+    parts = normalized_path.split(os.sep) if os.sep in normalized_path else normalized_path.split("\\")
+    first_folder = parts[0] if parts else ""
+
+    if first_folder in ("..", "", ".", "/", "\\"):
+        QMessageBox.critical(window, "Unsafe Path", "Invalid game path structure. Aborting.")
+        return
+
+    base_path = os.path.realpath(game_install_path)
+    game_base_folder = os.path.realpath(os.path.join(base_path, first_folder))
+
+    prereqs = prereq_paths[game_id]
+
+    # Confirm with user
+    reply = QMessageBox.question(
+        window,
+        "Install Prerequisites",
+        f"This will install {len(prereqs)} prerequisite(s) for {display_name}.\n\nContinue?",
+        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+    )
+    if reply != QMessageBox.StandardButton.Yes:
+        return
+
+    percentage_label.setText(f"Installing prerequisites for {display_name}... Please wait.")
+    QApplication.processEvents()
+
+    for prereq in prereqs:
+        rel_path = prereq.get("path")
+        cmd_args = prereq.get("command", "")
+        if not rel_path:
+            print(f"Skipping malformed prereq entry: {prereq}")
+            continue
+
+        installer_path = os.path.join(game_base_folder, rel_path.lstrip("/").lstrip("\\"))
+        installer_path = os.path.realpath(installer_path)
+
+        # Safety: ensure installer_path is still within game_base_folder
+        try:
+            if os.path.commonpath([game_base_folder, installer_path]) != game_base_folder:
+                QMessageBox.critical(window, "Unsafe Installer Path", f"Skipping unsafe path: {installer_path}")
+                continue
+        except Exception:
+            QMessageBox.critical(window, "Unsafe Installer Path", f"Could not validate path: {installer_path}")
+            continue
+
+        if not os.path.exists(installer_path):
+            QMessageBox.warning(window, "Missing Installer", f"Installer not found:\n{installer_path}")
+            continue
+
+        percentage_label.setText(f"Running: {os.path.basename(installer_path)}")
+        QApplication.processEvents()
+
+        try:
+            if isWindows:
+                # Use ShellExecute to request elevation
+                import ctypes
+                try:
+                    ctypes.windll.shell32.ShellExecuteW(
+                        None, "runas", installer_path, cmd_args, os.path.dirname(installer_path), 1
+                    )
+                except Exception as e:
+                    QMessageBox.warning(window, "Elevation Failed", f"Could not elevate for {os.path.basename(installer_path)}:\n{e}")
+                    subprocess.Popen([installer_path] + cmd_args.split(), cwd=os.path.dirname(installer_path))
+            else:
+                # macOS/Linux — just execute
+                subprocess.Popen([installer_path] + cmd_args.split(), cwd=os.path.dirname(installer_path))
+        except Exception as e:
+            QMessageBox.critical(window, "Installation Failed", f"Error running {os.path.basename(installer_path)}:\n{e}")
+            continue
+
+        # Wait a bit between installers to avoid overlapping UI
+        time.sleep(1)
+        QApplication.processEvents()
+
+    percentage_label.setText(f"Finished installing prerequisites for {display_name}.")
+    QMessageBox.information(window, "Done", f"All prerequisites for {display_name} have been executed.")
+
+
 uninstall_button.clicked.connect(uninstall_game)
 
 # Show the window
