@@ -206,7 +206,6 @@ def on_game_selected():
     else:
         download_play_button.setText("Download")
 
-    print(f"Currently downloading: {currently_downloading_game} versus {game_id}")
     if currently_downloading_game == game_id:
         download_play_button.setText("Cancel Download")
 
