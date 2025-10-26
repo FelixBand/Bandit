@@ -131,7 +131,7 @@ def update_installed_opacity():
 
 update_installed_opacity()
 
-# Make the list 50% opacity, for games that are not downloaded yet.
+# Make the list 40% opacity, for games that are not downloaded yet.
 # We check saved_paths.json to see if the game is downloaded.
 
 # Now we populate the list with only display names.
