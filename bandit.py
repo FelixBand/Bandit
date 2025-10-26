@@ -434,9 +434,9 @@ def download_game(game_id, download_path):
                     if total_size:
                         percent_done = (downloaded_size / total_size) * 100
                         print(f"{downloaded_size} of {total_size}")
-                        percentage_label.setText(f"Downloading {display_name}: {percent_done:.2f}% complete")
+                        percentage_label.setText(f"Downloading {game_id}: {percent_done:.2f}% complete")
                     else:
-                        percentage_label.setText(f"Downloading {display_name}: {downloaded_size} bytes")
+                        percentage_label.setText(f"Downloading {game_id}: {downloaded_size} bytes")
                     # Make UI update immediately
                     QApplication.processEvents()
 
