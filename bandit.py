@@ -26,7 +26,7 @@ OS = platform.system()
 
 #OS = "Windows"
 
-version = "1.0.0"
+version = "1.1.0"
 
 # Make a window
 app = QApplication(sys.argv)
@@ -190,41 +190,54 @@ check_for_updates()
 
 # When a game is selected, show its size in GB, unless under 1 GB, then show in MB.
 def on_game_selected():
-    # Now we check if the selected game is downloaded or not, and change the download/play button text accordingly.
     selected_game_index = game_list_widget.currentRow()
     if selected_game_index == -1:
         size_label.setText("No game selected")
+        download_play_button.setEnabled(False)
+        uninstall_button.setEnabled(False)
         return
 
-    # get the selected entry and its game_id
     selected_game_entry = game_list[selected_game_index]
     display_name, game_id, size_in_bytes = selected_game_entry.split('|')
 
-    # check saved_paths (keys are game_id)
-    if game_id in saved_paths:
-        download_play_button.setText("Play")
-    else:
-        download_play_button.setText("Download")
-
-    if currently_downloading_game == game_id:
-        download_play_button.setText("Cancel Download")
-
-    # Make downloading other games disabled when one is downloading
-    # Play is always enabled for installed games
+    # Enable Download/Play button only if no other download is in progress
     if currently_downloading and currently_downloading_game != game_id and game_id not in saved_paths:
         download_play_button.setEnabled(False)
     else:
         download_play_button.setEnabled(True)
 
-    size_in_bytes = int(size_in_bytes) # Tell the user the size of the game (uncompressed)
-    if size_in_bytes >= 1_000_000_000:  # 1 GB
+    # Enable or disable Uninstall button based on installation state
+    if game_id in saved_paths:
+        uninstall_button.setEnabled(True)
+        download_play_button.setText("Play")
+    else:
+        uninstall_button.setEnabled(False)
+        download_play_button.setText("Download")
+
+    if currently_downloading_game == game_id:
+        download_play_button.setText("Cancel Download")
+
+    size_in_bytes = int(size_in_bytes)
+    if size_in_bytes >= 1_000_000_000:
         size_in_gb = size_in_bytes / 1_000_000_000
         size_label.setText(f"Size of {display_name}: {size_in_gb:.2f} GB")
     else:
         size_in_mb = size_in_bytes / 1_000_000
         size_label.setText(f"Size of {display_name}: {size_in_mb:.2f} MB")
 
+
 game_list_widget.currentRowChanged.connect(on_game_selected)
+
+def show_context_menu(position):
+    menu = QMenu()
+    browse_action = menu.addAction("Browse File Location")
+    action = menu.exec(game_list_widget.viewport().mapToGlobal(position))
+    if action == browse_action:
+        browse_file_location()
+
+# Enable right-click context menu
+game_list_widget.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+game_list_widget.customContextMenuRequested.connect(show_context_menu)
 
 def download_and_play_game():
     global currently_downloading_game, currently_downloading, saved_paths, download_cancel_requested, _current_download_response
@@ -336,7 +349,7 @@ def download_and_play_game():
 
     print(f"Downloading {display_name} to {target_dir}")
     currently_downloading = True
-    download_game(game_id, target_dir)
+    download_game(game_id, target_dir, display_name)
 
     print(f"Finished downloading {display_name}")
     percentage_label.setText("Downloaded " + display_name + " successfully!")
@@ -371,7 +384,7 @@ def download_and_play_game():
     on_game_selected()
     update_installed_opacity()
 
-def download_game(game_id, download_path):
+def download_game(game_id, download_path, display_name=None):
     global download_cancel_requested, _current_download_response, currently_downloading_game, currently_downloading
     url = f"https://thuis.felixband.nl/bandit/{OS}/{game_id}.tar.gz"
     try:
@@ -432,9 +445,9 @@ def download_game(game_id, download_path):
                     if total_size:
                         percent_done = (downloaded_size / total_size) * 100
                         print(f"{downloaded_size} of {total_size}")
-                        percentage_label.setText(f"Downloading {game_id}: {percent_done:.2f}% complete")
+                        percentage_label.setText(f"Downloading {display_name}: {percent_done:.2f}% complete")
                     else:
-                        percentage_label.setText(f"Downloading {game_id}: {downloaded_size} bytes")
+                        percentage_label.setText(f"Downloading {display_name}: {downloaded_size} bytes")
                     # Make UI update immediately
                     QApplication.processEvents()
 
@@ -586,6 +599,7 @@ def uninstall_game():
         QMessageBox.information(window, "Uninstalled", f"{display_name} has been uninstalled successfully.")
         on_game_selected()
         update_installed_opacity()
+        percentage_label.setText("Uninstalled " + display_name + " successfully.")
 
     except Exception as e:
         QMessageBox.critical(window, "Uninstall Failed", f"Failed to uninstall {display_name}:\n{e}")
@@ -693,6 +707,55 @@ def install_prerequisites():
 
     percentage_label.setText(f"Finished installing prerequisites for {display_name}.")
     QMessageBox.information(window, "Done", f"All prerequisites for {display_name} have been executed.")
+
+def browse_file_location():
+    selected_game_index = game_list_widget.currentRow()
+    if selected_game_index == -1:
+        QMessageBox.warning(window, "No Game Selected", "Please select a game first.")
+        return
+
+    selected_game_entry = game_list[selected_game_index]
+    display_name, game_id, _ = selected_game_entry.split('|')
+
+    if game_id not in saved_paths:
+        QMessageBox.warning(window, "Game Not Installed", f"{display_name} is not installed.")
+        return
+
+    game_install_path = saved_paths[game_id]
+    executable_relative_path = executable_paths.get(game_id, "")
+    if not executable_relative_path:
+        QMessageBox.warning(window, "Missing Executable", f"Executable path for {display_name} not found.")
+        return
+
+    # Normalize and safely extract the first folder from the executable path
+    normalized_path = os.path.normpath(executable_relative_path).lstrip(os.sep).lstrip("\\")
+    parts = normalized_path.split(os.sep) if os.sep in normalized_path else normalized_path.split("\\")
+    first_folder = parts[0] if parts else ""
+
+    if first_folder in ("..", "", ".", "/", "\\"):
+        QMessageBox.warning(window, "Invalid Path", "Invalid game folder structure.")
+        return
+
+    # Final folder to open
+    target_folder = os.path.realpath(os.path.join(game_install_path, first_folder))
+
+    if not os.path.exists(target_folder):
+        QMessageBox.warning(window, "Folder Not Found", f"The folder for {display_name} does not exist:\n{target_folder}")
+        return
+
+    try:
+        if isWindows:
+            # Windows: open the folder normally
+            os.startfile(target_folder)
+        elif isMacOS:
+            # macOS: open Finder and highlight (select) the folder
+            subprocess.run(["open", "-R", target_folder])
+        elif isLinux:
+            subprocess.run(["xdg-open", target_folder])
+        else:
+            QMessageBox.warning(window, "Unsupported OS", "This feature is not supported on your operating system.")
+    except Exception as e:
+        QMessageBox.critical(window, "Error", f"Failed to open file location:\n{e}")
 
 
 
