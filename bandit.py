@@ -349,34 +349,38 @@ def download_and_play_game():
 
     print(f"Downloading {display_name} to {target_dir}")
     currently_downloading = True
-    download_game(game_id, target_dir, display_name)
+    success = download_game(game_id, target_dir, display_name)
 
-    print(f"Finished downloading {display_name}")
-    percentage_label.setText("Downloaded " + display_name + " successfully!")
+    if success:
+        print(f"Finished downloading {display_name}")
+        percentage_label.setText("Downloaded " + display_name + " successfully!")
 
-    # In the same directory where this .py script is located, we make an entry in a file called "saved_paths.json"
-    # That tracks where the games are saved.
-    saved_paths_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "saved_paths.json")
-    try:
-        if os.path.exists(saved_paths_file):
-            with open(saved_paths_file, 'r') as f:
-                saved_paths = json.load(f)
-        else:
+        # Save to saved_paths.json only if download succeeded
+        saved_paths_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "saved_paths.json")
+        try:
+            if os.path.exists(saved_paths_file):
+                with open(saved_paths_file, 'r') as f:
+                    saved_paths = json.load(f)
+            else:
+                saved_paths = {}
+        except Exception:
             saved_paths = {}
-    except Exception:
-        # corrupted or unreadable JSON -> start fresh
-        saved_paths = {}
 
-    # record the chosen path for this game and persist immediately
-    saved_paths[game_id] = target_dir
-    try:
-        with open(saved_paths_file, 'w') as f:
-            json.dump(saved_paths, f, indent=2)
-            f.flush()
-            os.fsync(f.fileno())
-        print(f"Saved game path to {saved_paths_file}")
-    except Exception as e:
-        print(f"Failed to write saved_paths.json: {e}")
+        saved_paths[game_id] = target_dir
+        try:
+            with open(saved_paths_file, 'w') as f:
+                json.dump(saved_paths, f, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            print(f"Saved game path to {saved_paths_file}")
+        except Exception as e:
+            print(f"Failed to write saved_paths.json: {e}")
+
+        update_installed_opacity()
+    else:
+        print(f"Download of {display_name} failed or cancelled.")
+        percentage_label.setText(f"Download of {display_name} cancelled.")
+
 
     currently_downloading = False
     currently_downloading_game = ""
@@ -387,6 +391,7 @@ def download_and_play_game():
 def download_game(game_id, download_path, display_name=None):
     global download_cancel_requested, _current_download_response, currently_downloading_game, currently_downloading
     url = f"https://thuis.felixband.nl/bandit/{OS}/{game_id}.tar.gz"
+    success = False  # ✅ track if download actually succeeded
     try:
         with requests.get(url, stream=True, timeout=(5, 30)) as response:
             _current_download_response = response
@@ -465,6 +470,7 @@ def download_game(game_id, download_path, display_name=None):
                             # so on_bytes will be called as data is streamed and the UI updated.
                             tar.extract(member, path=download_path)
                     print(f"\nGame {game_id} downloaded and extracted to {download_path}")
+                    success = True  # Success
                 except IOError as e:
                     # Cancellation or IO abort
                     print(f"Download cancelled or aborted: {e}")
@@ -486,6 +492,8 @@ def download_game(game_id, download_path, display_name=None):
         currently_downloading = False
         currently_downloading_game = ""
         QApplication.processEvents()
+
+    return success  # return whether download succeeded
 
 download_play_button.clicked.connect(download_and_play_game)
 
@@ -761,6 +769,34 @@ def browse_file_location():
 
 
 uninstall_button.clicked.connect(uninstall_game)
+
+def handle_close_event(event):
+    global currently_downloading, currently_downloading_game
+
+    if currently_downloading:
+        reply = QMessageBox.warning(
+            window,
+            "Download in Progress",
+            f"A download ({currently_downloading_game}) is still in progress.\n\n"
+            "If you close the launcher now, the download will be cancelled.\n\n"
+            "Do you really want to quit?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
+        )
+
+        if reply == QMessageBox.StandardButton.No:
+            event.ignore()
+            return
+        else:
+            print("User confirmed quit — cancelling active download.")
+            cancel_download(currently_downloading_game)
+            event.accept()
+    else:
+        event.accept()
+
+# Attach the close event handler to the window
+window.closeEvent = handle_close_event
+
 
 # Show the window
 window.show()
