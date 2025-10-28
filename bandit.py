@@ -777,7 +777,7 @@ def handle_close_event(event):
         reply = QMessageBox.warning(
             window,
             "Download in Progress",
-            f"A download ({currently_downloading_game}) is still in progress.\n\n"
+            "A download is still in progress.\n\n"
             "If you close the launcher now, the download will be cancelled.\n\n"
             "Do you really want to quit?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
