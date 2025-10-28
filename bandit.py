@@ -268,16 +268,14 @@ def download_and_play_game():
         
         # If the game is run for the first time, install prerequisites automatically.
         # This is done by checking if a file called "prerequisites_installed.txt" exists in the game folder.
-        prereq_flag_file = os.path.join(game_install_path, os.path.dirname(executable_relative_path), "prerequisites_installed.txt")
-        if not os.path.exists(prereq_flag_file):
+        # Only install prerequisites if they exist for this game
+        prereq_paths = download_prereq_paths()
+        if game_id in prereq_paths and prereq_paths[game_id]:
             print(f"Installing prerequisites for {display_name}...")
             install_prerequisites()
-            # Create the flag file to avoid reinstalling next time
-            try:
-                with open(prereq_flag_file, 'w') as f:
-                    f.write("Prerequisites installed.")
-            except Exception as e:
-                print(f"Failed to create prerequisites flag file: {e}")
+        else:
+            print(f"No prerequisites for {display_name}, skipping.")
+
 
 
         try:
@@ -614,7 +612,7 @@ def install_prerequisites():
 
     prereq_paths = download_prereq_paths()
     if game_id not in prereq_paths or not prereq_paths[game_id]:
-        QMessageBox.information(window, "No Prerequisites", f"No prerequisites listed for {display_name}.")
+        # Do nothing if no prereqs
         return
 
     game_install_path = saved_paths[game_id]
