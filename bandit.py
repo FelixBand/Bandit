@@ -277,7 +277,6 @@ def download_and_play_game():
         print("IMPORTANT" + os.path.join(game_install_path, os.path.dirname(executable_relative_path)))
         if not os.path.exists(game_exec_full_path):
             QMessageBox.critical(window, "Error", f"Executable for {display_name} not found at expected location:\n{game_exec_full_path}")
-            return
         
         # If the game is run for the first time, install prerequisites automatically.
         # This is done by checking if a file called "prerequisites_installed.txt" exists in the game folder.
