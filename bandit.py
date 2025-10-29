@@ -655,6 +655,13 @@ def install_prerequisites():
     base_path = os.path.realpath(game_install_path)
     game_base_folder = os.path.realpath(os.path.join(base_path, first_folder))
 
+    # Skip installing if prerequisites_installed.txt already exists
+    marker_path = os.path.join(game_base_folder, "prerequisites_installed.txt")
+    if os.path.exists(marker_path):
+        print(f"Skipping prerequisites for {display_name}: marker file found at {marker_path}")
+        percentage_label.setText(f"Prerequisites already installed for {display_name}.")
+        return
+
     prereqs = prereq_paths[game_id]
 
     reply = QMessageBox.question(
@@ -712,6 +719,16 @@ def install_prerequisites():
 
         time.sleep(1)
         QApplication.processEvents()
+
+        # Create marker file so we don't reinstall next time
+    try:
+        marker_path = os.path.join(game_base_folder, "prerequisites_installed.txt")
+        with open(marker_path, "w") as f:
+            f.write("Prerequisites installed successfully.\n")
+        print(f"Created prerequisites marker: {marker_path}")
+    except Exception as e:
+        print(f"Failed to create prerequisites marker file: {e}")
+
 
     percentage_label.setText(f"Finished installing prerequisites for {display_name}.")
     QMessageBox.information(window, "Done", f"All prerequisites for {display_name} have been executed.")
