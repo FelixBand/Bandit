@@ -26,7 +26,7 @@ OS = platform.system()
 
 #OS = "Windows"
 
-version = "1.1.0"
+version = "1.1.1"
 
 # Make a window
 app = QApplication(sys.argv)
