@@ -22,7 +22,7 @@ isWindows = platform.system() == 'Windows'
 isMacOS = platform.system() == 'Darwin'
 isLinux = platform.system() == 'Linux'
 
-OS = platform.system()
+#OS = platform.system()
 
 OS = "Windows"
 
