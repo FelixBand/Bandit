@@ -26,7 +26,7 @@ OS = platform.system()
 
 #OS = "Windows"
 
-version = "1.1.1"
+version = "1.2.0"
 
 # Make a window
 app = QApplication(sys.argv)
@@ -134,10 +134,31 @@ update_installed_opacity()
 # Make the list 40% opacity, for games that are not downloaded yet.
 # We check saved_paths.json to see if the game is downloaded.
 
-# Now we populate the list with only display names.
+# Now we populate the list with only display names
 for game in game_list:
     display_name = game.split('|')[0]
+
+    # either 0 or nothing at all = singleplayer/local only
+    # 1 = LAN multiplayer only
+    # 2 = Online multiplayer with other Bandit users
+    # 3 = Online multiplayer with non-Bandit users (official servers)
+
+    # Prefix multiplayer status to the display name. 0 = red circle emoji, 1 = orange circle emoji, 2 = yellow circle emoji 3 = green circle emoji
+
+    # The status is in list.txt as the fourth field, if missing assume 0 (singleplayer)
+    fields = game.split('|')
+    multiplayer_status = fields[3] if len(fields) > 3 else '0'
+    if multiplayer_status == '0':
+        display_name = "🔴 " + display_name
+    elif multiplayer_status == '1':
+        display_name = "🟠 " + display_name
+    elif multiplayer_status == '2':
+        display_name = "🟡 " + display_name
+    elif multiplayer_status == '3':
+        display_name = "🟢 " + display_name
+
     game_list_widget.addItem(display_name)
+
 
 layout.addWidget(game_list_widget)
 
@@ -154,6 +175,9 @@ layout.addWidget(percentage_label)
 
 size_label = QLabel("No game selected")
 layout.addWidget(size_label)
+
+multiplayer_status_label = QLabel("🔴 Singleplayer/Local only | 🟠 LAN Multiplayer | 🟡 Online Multiplayer (Bandit users) | 🟢 Online Multiplayer (Official servers)")
+layout.addWidget(multiplayer_status_label)
 
 currently_downloading_game = ""
 currently_downloading = False
@@ -224,6 +248,18 @@ def on_game_selected():
     else:
         size_in_mb = size_in_bytes / 1_000_000
         size_label.setText(f"Size of {display_name}: {size_in_mb:.2f} MB")
+
+    # Show multiplayer status, not as number but as the emoji and description
+    fields = selected_game_entry.split('|')
+    multiplayer_status = fields[3] if len(fields) > 3 else '0'
+    if multiplayer_status == '0':
+        multiplayer_status_label.setText("Multiplayer Status: 🔴 Singleplayer/Local only")
+    elif multiplayer_status == '1':
+        multiplayer_status_label.setText("Multiplayer Status: 🟠 LAN Multiplayer")
+    elif multiplayer_status == '2':
+        multiplayer_status_label.setText("Multiplayer Status: 🟡 Online Multiplayer (Bandit users)")
+    elif multiplayer_status == '3':
+        multiplayer_status_label.setText("Multiplayer Status: 🟢 Online Multiplayer (Official servers)")
 
 
 game_list_widget.currentRowChanged.connect(on_game_selected)
