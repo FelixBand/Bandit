@@ -22,9 +22,9 @@ isWindows = platform.system() == 'Windows'
 isMacOS = platform.system() == 'Darwin'
 isLinux = platform.system() == 'Linux'
 
-#OS = platform.system()
+OS = platform.system()
 
-OS = "Windows"
+#OS = "Windows"
 
 version = "1.2.0"
 
