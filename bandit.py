@@ -24,7 +24,7 @@ isLinux = platform.system() == 'Linux'
 
 OS = platform.system()
 
-#OS = "Windows"
+OS = "Windows"
 
 version = "1.2.0"
 
@@ -153,9 +153,9 @@ for game in game_list:
     elif multiplayer_status == '1':
         display_name = "🟠 " + display_name
     elif multiplayer_status == '2':
-        display_name = "🟡 " + display_name
-    elif multiplayer_status == '3':
         display_name = "🟢 " + display_name
+    elif multiplayer_status == '3':
+        display_name = "🟩 " + display_name
 
     game_list_widget.addItem(display_name)
 
@@ -176,7 +176,7 @@ layout.addWidget(percentage_label)
 size_label = QLabel("No game selected")
 layout.addWidget(size_label)
 
-multiplayer_status_label = QLabel("🔴 Singleplayer/Local only | 🟠 LAN Multiplayer | 🟡 Online Multiplayer (Bandit users) | 🟢 Online Multiplayer (Official servers)")
+multiplayer_status_label = QLabel("🔴 Singleplayer/Local only | 🟠 LAN Multiplayer | 🟢 Online Multiplayer (other Bandit users) | 🟩 Online Multiplayer (Official servers)")
 layout.addWidget(multiplayer_status_label)
 
 currently_downloading_game = ""
@@ -222,7 +222,11 @@ def on_game_selected():
         return
 
     selected_game_entry = game_list[selected_game_index]
-    display_name, game_id, size_in_bytes = selected_game_entry.split('|')
+    fields = selected_game_entry.split('|')
+    display_name = fields[0]
+    game_id = fields[1]
+    size_in_bytes = fields[2]
+    multiplayer_status = fields[3] if len(fields) > 3 else '0'
 
     # Enable Download/Play button only if no other download is in progress
     if currently_downloading and currently_downloading_game != game_id and game_id not in saved_paths:
@@ -257,9 +261,9 @@ def on_game_selected():
     elif multiplayer_status == '1':
         multiplayer_status_label.setText("Multiplayer Status: 🟠 LAN Multiplayer")
     elif multiplayer_status == '2':
-        multiplayer_status_label.setText("Multiplayer Status: 🟡 Online Multiplayer (Bandit users)")
+        multiplayer_status_label.setText("Multiplayer Status: 🟢 Online Multiplayer (Bandit users)")
     elif multiplayer_status == '3':
-        multiplayer_status_label.setText("Multiplayer Status: 🟢 Online Multiplayer (Official servers)")
+        multiplayer_status_label.setText("Multiplayer Status: 🟩 Online Multiplayer (Official servers)")
 
 
 game_list_widget.currentRowChanged.connect(on_game_selected)
@@ -559,7 +563,11 @@ def uninstall_game():
         return
     
     selected_game_entry = game_list[selected_game_index]
-    display_name, game_id, size_in_bytes = selected_game_entry.split('|')
+    fields = selected_game_entry.split('|')
+    display_name = fields[0]
+    game_id = fields[1]
+    size_in_bytes = fields[2]
+    multiplayer_status = fields[3] if len(fields) > 3 else '0'
 
     if game_id not in saved_paths:
         QMessageBox.warning(window, "Not Installed", f"{display_name} is not installed.")
@@ -661,7 +669,10 @@ def install_prerequisites():
         return
 
     selected_game_entry = game_list[selected_game_index]
-    display_name, game_id, _ = selected_game_entry.split('|')
+    fields = selected_game_entry.split('|')
+    display_name = fields[0]
+    game_id = fields[1]
+
 
     if game_id not in saved_paths:
         QMessageBox.warning(window, "Game Not Installed", f"{display_name} must be installed before installing prerequisites.")
