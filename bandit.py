@@ -294,7 +294,11 @@ def download_and_play_game():
         return
 
     selected_game_entry = game_list[selected_game_index]
-    display_name, game_id, size_in_bytes = selected_game_entry.split('|')
+    fields = selected_game_entry.split('|')
+    display_name = fields[0]
+    game_id = fields[1]
+    size_in_bytes = fields[2]
+    multiplayer_status = fields[3] if len(fields) > 3 else '0'
 
     # If already installed -> launch
     if game_id in saved_paths:
