@@ -24,9 +24,37 @@ isLinux = platform.system() == 'Linux'
 
 OS = platform.system()
 
-#OS = "Windows"
+# Force OS to Windows for testing/compilation consistency if needed, 
+# but rely on dynamic check for pathing below
+# OS = "Windows" 
 
-version = "1.2.0"
+version = "1.3.0"
+
+# --- CONFIGURATION FILE PATH FIX (Addressing Permission/Sync Issues) ---
+# Determine a safe, user-writable directory for configuration files (like saved_paths.json)
+# This fixes permission issues when installed in Program Files or a Mac App Bundle.
+
+if isWindows:
+    # Use %APPDATA% for configuration data on Windows
+    CONFIG_BASE = os.path.expandvars("%APPDATA%")
+    CONFIG_DIR = os.path.join(CONFIG_BASE, "BanditGameLauncher")
+elif isMacOS:
+    # Use Application Support on macOS
+    CONFIG_BASE = os.path.expanduser("~/Library/Application Support")
+    CONFIG_DIR = os.path.join(CONFIG_BASE, "BanditGameLauncher")
+elif isLinux:
+    # Use ~/.config on Linux (following XDG Base Directory Specification)
+    CONFIG_BASE = os.path.expanduser("~/.config")
+    CONFIG_DIR = os.path.join(CONFIG_BASE, "banditgamelauncher")
+else:
+    # Fallback (should not happen, but safe)
+    CONFIG_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# Ensure the configuration directory exists
+os.makedirs(CONFIG_DIR, exist_ok=True)
+
+# Define the new, safe path for the configuration file
+saved_paths_file = os.path.join(CONFIG_DIR, "saved_paths.json")
 
 # Make a window
 app = QApplication(sys.argv)
@@ -44,7 +72,10 @@ class OpacityDelegate(QStyledItemDelegate):
         self.installed_games = set()  # use a set for faster lookups
 
     def paint(self, painter, option, index):
-        game_title = index.data(Qt.ItemDataRole.DisplayRole)
+        game_title_with_emoji = index.data(Qt.ItemDataRole.DisplayRole)
+        # Strip emoji prefix to get the clean display name for lookup
+        game_title = game_title_with_emoji[2:].strip() if game_title_with_emoji else ""
+
         if game_title in self.installed_games:
             painter.setOpacity(1.0)  # Fully opaque for installed
         else:
@@ -59,7 +90,7 @@ class OpacityDelegate(QStyledItemDelegate):
 # Make list of games downloaded from https://thuis.felixband.nl/bandit/{OS}/list.txt
 # {OS} is Windows, Linux, or Darwin
 # Entry of list.txt is one game per line, and looks as such:
-# Display Name|game_id|Size in bytes (number)
+# Display Name|game_id|Size in bytes (number)|multiplayer_status
 
 def _fetch_remote(path, as_json=False, timeout=10, default=None):
     url = f"https://thuis.felixband.nl/bandit/{OS}/{path}"
@@ -86,7 +117,6 @@ def download_prereq_paths():
     return _fetch_remote("prereq_paths.json", as_json=True, default={})
 
 # Make a new saved_paths.json file if it doesn't exist
-saved_paths_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "saved_paths.json")
 if not os.path.exists(saved_paths_file):
     with open(saved_paths_file, 'w') as f:
         json.dump({}, f)
@@ -97,6 +127,19 @@ try:
         saved_paths = json.load(f)
 except Exception:
     saved_paths = {}
+
+# --- GAME DATA PARSING & ACCESS UTILITY (Addressing Repetitive Code) ---
+
+def parse_game_entry(selected_game_entry):
+    """Parses a game entry string into a dictionary."""
+    fields = selected_game_entry.split('|')
+    data = {
+        'display_name': fields[0],
+        'game_id': fields[1],
+        'size_in_bytes': fields[2],
+        'multiplayer_status': fields[3] if len(fields) > 3 else '0'
+    }
+    return data
 
 # Sort the list alphabetically by display name
 def sort_game_list(game_list):
@@ -122,32 +165,23 @@ game_list_widget.setItemDelegate(delegate)
 def update_installed_opacity():
     """Refresh which games are shown as installed (100% opacity)."""
     installed_display_names = [
-        game.split('|')[0]
+        parse_game_entry(game)['display_name']
         for game in game_list
-        if game.split('|')[1] in saved_paths
+        if parse_game_entry(game)['game_id'] in saved_paths
     ]
     delegate.set_installed_games(installed_display_names)
     game_list_widget.viewport().update()
 
 update_installed_opacity()
 
-# Make the list 40% opacity, for games that are not downloaded yet.
-# We check saved_paths.json to see if the game is downloaded.
-
 # Now we populate the list with only display names
 for game in game_list:
-    display_name = game.split('|')[0]
-
-    # either 0 or nothing at all = singleplayer/local only
-    # 1 = LAN multiplayer only
-    # 2 = Online multiplayer with other Bandit users
-    # 3 = Online multiplayer with non-Bandit users (official servers)
+    game_data = parse_game_entry(game)
+    display_name = game_data['display_name']
+    multiplayer_status = game_data['multiplayer_status']
 
     # Prefix multiplayer status to the display name. 0 = red circle emoji, 1 = orange circle emoji, 2 = yellow circle emoji 3 = green circle emoji
 
-    # The status is in list.txt as the fourth field, if missing assume 0 (singleplayer)
-    fields = game.split('|')
-    multiplayer_status = fields[3] if len(fields) > 3 else '0'
     if multiplayer_status == '0':
         display_name = "🔴 " + display_name
     elif multiplayer_status == '1':
@@ -222,11 +256,13 @@ def on_game_selected():
         return
 
     selected_game_entry = game_list[selected_game_index]
-    fields = selected_game_entry.split('|')
-    display_name = fields[0]
-    game_id = fields[1]
-    size_in_bytes = fields[2]
-    multiplayer_status = fields[3] if len(fields) > 3 else '0'
+    # Use utility function to access data
+    game_data = parse_game_entry(selected_game_entry)
+    display_name = game_data['display_name']
+    game_id = game_data['game_id']
+    size_in_bytes = game_data['size_in_bytes']
+    multiplayer_status = game_data['multiplayer_status']
+
 
     # Enable Download/Play button only if no other download is in progress
     if currently_downloading and currently_downloading_game != game_id and game_id not in saved_paths:
@@ -245,17 +281,18 @@ def on_game_selected():
     if currently_downloading_game == game_id:
         download_play_button.setText("Cancel Download")
 
-    size_in_bytes = int(size_in_bytes)
-    if size_in_bytes >= 1_000_000_000:
-        size_in_gb = size_in_bytes / 1_000_000_000
-        size_label.setText(f"Size of {display_name}: {size_in_gb:.2f} GB")
-    else:
-        size_in_mb = size_in_bytes / 1_000_000
-        size_label.setText(f"Size of {display_name}: {size_in_mb:.2f} MB")
+    try:
+        size_in_bytes = int(size_in_bytes)
+        if size_in_bytes >= 1_000_000_000:
+            size_in_gb = size_in_bytes / 1_000_000_000
+            size_label.setText(f"Size of {display_name}: {size_in_gb:.2f} GB")
+        else:
+            size_in_mb = size_in_bytes / 1_000_000
+            size_label.setText(f"Size of {display_name}: {size_in_mb:.2f} MB")
+    except ValueError:
+        size_label.setText(f"Size of {display_name}: N/A")
 
     # Show multiplayer status, not as number but as the emoji and description
-    fields = selected_game_entry.split('|')
-    multiplayer_status = fields[3] if len(fields) > 3 else '0'
     if multiplayer_status == '0':
         multiplayer_status_label.setText("Multiplayer Status: 🔴 Singleplayer/Local only")
     elif multiplayer_status == '1':
@@ -294,11 +331,12 @@ def download_and_play_game():
         return
 
     selected_game_entry = game_list[selected_game_index]
-    fields = selected_game_entry.split('|')
-    display_name = fields[0]
-    game_id = fields[1]
-    size_in_bytes = fields[2]
-    multiplayer_status = fields[3] if len(fields) > 3 else '0'
+    # Use utility function to access data
+    game_data = parse_game_entry(selected_game_entry)
+    display_name = game_data['display_name']
+    game_id = game_data['game_id']
+    size_in_bytes = game_data['size_in_bytes']
+    multiplayer_status = game_data['multiplayer_status']
 
     # If already installed -> launch
     if game_id in saved_paths:
@@ -321,6 +359,7 @@ def download_and_play_game():
         print("IMPORTANT" + os.path.join(game_install_path, os.path.dirname(executable_relative_path)))
         if not os.path.exists(game_exec_full_path):
             QMessageBox.critical(window, "Error", f"Executable for {display_name} not found at expected location:\n{game_exec_full_path}")
+            return
         
         # If the game is run for the first time, install prerequisites automatically.
         # This is done by checking if a file called "prerequisites_installed.txt" exists in the game folder.
@@ -331,7 +370,6 @@ def download_and_play_game():
             install_prerequisites()
         else:
             print(f"No prerequisites for {display_name}, skipping.")
-
 
 
         try:
@@ -367,6 +405,7 @@ def download_and_play_game():
     # determine default download path by OS
     # Make the folder if it doesn't exist
     if isWindows:
+        # Use %USERPROFILE%\.banditgamelauncher\games as the default download folder
         os.makedirs(os.path.join(os.path.expandvars("%USERPROFILE%"), ".banditgamelauncher", "games"), exist_ok=True)
         download_path = os.path.join(os.path.expandvars("%USERPROFILE%"), ".banditgamelauncher", "games")
     elif isMacOS:
@@ -384,6 +423,7 @@ def download_and_play_game():
         return
 
     # Create a folder for this game inside the selected directory and use that as the target.
+    # The target_dir is the selected_parent, since the game is expected to extract its first-level folder there.
     target_dir = os.path.join(selected_parent)
     os.makedirs(target_dir, exist_ok=True)
 
@@ -399,10 +439,12 @@ def download_and_play_game():
         percentage_label.setText("Downloaded " + display_name + " successfully!")
 
         # Save to saved_paths.json only if download succeeded
-        saved_paths_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "saved_paths.json")
+        # Use the corrected global path
         try:
+            # Re-read in case another process changed it (though unlikely)
             if os.path.exists(saved_paths_file):
                 with open(saved_paths_file, 'r') as f:
+                    # Update global saved_paths
                     saved_paths = json.load(f)
             else:
                 saved_paths = {}
@@ -446,7 +488,12 @@ def download_game(game_id, download_path, display_name=None):
                 if not total_size:
                     try:
                         # Fall back to the size listed in list.txt
-                        total_size = int([game.split('|')[2] for game in game_list if game.split('|')[1] == game_id][0])
+                        # Use utility function for safer access
+                        game_entry = next((game for game in game_list if parse_game_entry(game)['game_id'] == game_id), None)
+                        if game_entry:
+                             total_size = int(parse_game_entry(game_entry)['size_in_bytes'])
+                        else:
+                            total_size = 0
                     except Exception:
                         total_size = 0
 
@@ -561,17 +608,20 @@ def cancel_download(game_id):
     QApplication.processEvents()
 
 def uninstall_game():
+    global saved_paths
     selected_game_index = game_list_widget.currentRow()
     if selected_game_index == -1:
         QMessageBox.warning(window, "No Game Selected", "Please select a game to uninstall.")
         return
     
     selected_game_entry = game_list[selected_game_index]
-    fields = selected_game_entry.split('|')
-    display_name = fields[0]
-    game_id = fields[1]
-    size_in_bytes = fields[2]
-    multiplayer_status = fields[3] if len(fields) > 3 else '0'
+    # Use utility function to access data
+    game_data = parse_game_entry(selected_game_entry)
+    display_name = game_data['display_name']
+    game_id = game_data['game_id']
+    size_in_bytes = game_data['size_in_bytes']
+    multiplayer_status = game_data['multiplayer_status']
+
 
     if game_id not in saved_paths:
         QMessageBox.warning(window, "Not Installed", f"{display_name} is not installed.")
@@ -623,6 +673,7 @@ def uninstall_game():
         try:
             if game_id in saved_paths:
                 del saved_paths[game_id]
+                # Use the corrected global path
                 with open(saved_paths_file, 'w') as f:
                     json.dump(saved_paths, f, indent=2)
             QMessageBox.information(window, "Uninstalled", f"No installation folder found for {display_name}.\nRemoved from launcher records.")
@@ -648,6 +699,7 @@ def uninstall_game():
         # Remove from saved_paths and update JSON
         if game_id in saved_paths:
             del saved_paths[game_id]
+            # Use the corrected global path
             with open(saved_paths_file, 'w') as f:
                 json.dump(saved_paths, f, indent=2)
 
@@ -673,9 +725,10 @@ def install_prerequisites():
         return
 
     selected_game_entry = game_list[selected_game_index]
-    fields = selected_game_entry.split('|')
-    display_name = fields[0]
-    game_id = fields[1]
+    # Use utility function to access data
+    game_data = parse_game_entry(selected_game_entry)
+    display_name = game_data['display_name']
+    game_id = game_data['game_id']
 
 
     if game_id not in saved_paths:
@@ -790,7 +843,10 @@ def browse_file_location():
         return
 
     selected_game_entry = game_list[selected_game_index]
-    display_name, game_id, _ = selected_game_entry.split('|')
+    # Use utility function to access data
+    game_data = parse_game_entry(selected_game_entry)
+    display_name = game_data['display_name']
+    game_id = game_data['game_id']
 
     if game_id not in saved_paths:
         QMessageBox.warning(window, "Game Not Installed", f"{display_name} is not installed.")
