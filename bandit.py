@@ -404,12 +404,212 @@ game_list_widget.currentRowChanged.connect(on_game_selected)
 def show_context_menu(position):
     menu = QMenu()
     browse_action = menu.addAction("Browse File Location")
+    move_action = menu.addAction("Move Game to Another Location")
     action = menu.exec(game_list_widget.viewport().mapToGlobal(position))
     if action == browse_action:
         browse_file_location()
+    elif action == move_action:
+        move_game()
 
 game_list_widget.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
 game_list_widget.customContextMenuRequested.connect(show_context_menu)
+
+def get_game_folder_path(game_id, installed_os):
+    """Get the full path to the game folder (first folder of executable path)"""
+    if installed_os not in saved_paths or game_id not in saved_paths[installed_os]:
+        return None
+    
+    game_install_path = saved_paths[installed_os][game_id]
+    executable_relative_path = executable_paths.get(installed_os, {}).get(game_id, "")
+    
+    if not executable_relative_path:
+        return game_install_path
+    
+    normalized_path = os.path.normpath(executable_relative_path).lstrip(os.sep).lstrip("\\")
+    parts = normalized_path.split(os.sep) if os.sep in normalized_path else normalized_path.split("\\")
+    first_folder = parts[0] if parts else ""
+    
+    if first_folder in ("..", "", ".", "/", "\\"):
+        return game_install_path
+    
+    return os.path.join(game_install_path, first_folder)
+
+def move_game():
+    """Move a game installation to another location"""
+    selected_game_index = game_list_widget.currentRow()
+    if selected_game_index == -1:
+        return
+    
+    selected_game_entry = game_list[selected_game_index]
+    game_data = parse_game_entry(selected_game_entry)
+    game_id = game_data['game_id']
+    display_name = game_data['display_name']
+    
+    # Find which OS version is installed
+    installed_os = None
+    if isLinux:
+        if game_id in saved_paths["Linux"]:
+            installed_os = "Linux"
+        elif game_id in saved_paths["Windows"]:
+            installed_os = "Windows"
+    else:
+        if game_id in saved_paths[OS]:
+            installed_os = OS
+    
+    if installed_os is None:
+        QMessageBox.warning(window, "Not Installed", f"{display_name} is not installed.")
+        return
+    
+    # Get current game folder path
+    current_game_folder = get_game_folder_path(game_id, installed_os)
+    if not current_game_folder or not os.path.exists(current_game_folder):
+        QMessageBox.warning(window, "Error", f"Cannot find game folder for {display_name}.")
+        return
+    
+    # Get parent directory of current game folder
+    current_parent = os.path.dirname(current_game_folder)
+    
+    # Ask for new location
+    new_parent = QFileDialog.getExistingDirectory(
+        window, 
+        f"Select New Location for {display_name} ({installed_os} version)",
+        current_parent
+    )
+    
+    if not new_parent:
+        return  # User cancelled
+    
+    # Check if destination is same as source
+    if os.path.normpath(new_parent) == os.path.normpath(current_parent):
+        QMessageBox.information(window, "Same Location", "Game is already in the selected location.")
+        return
+    
+    # Get the folder name (last part of current_game_folder)
+    folder_name = os.path.basename(current_game_folder)
+    new_game_folder = os.path.join(new_parent, folder_name)
+    
+    # Check if destination already exists
+    if os.path.exists(new_game_folder):
+        reply = QMessageBox.question(
+            window, 
+            "Folder Exists",
+            f"The folder '{folder_name}' already exists at the destination.\n\n"
+            "Do you want to replace it? (This will delete the existing folder)",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            if os.path.isdir(new_game_folder):
+                shutil.rmtree(new_game_folder)
+            else:
+                os.remove(new_game_folder)
+        except Exception as e:
+            QMessageBox.critical(window, "Error", f"Failed to remove existing folder: {e}")
+            return
+    
+    # Check available disk space in destination
+    try:
+        game_size = get_folder_size(current_game_folder)
+        free_space = get_free_disk_space(new_parent)
+        
+        if game_size > free_space:
+            size_gb = game_size / (1024**3)
+            free_gb = free_space / (1024**3)
+            QMessageBox.warning(
+                window,
+                "Insufficient Disk Space",
+                f"Not enough disk space to move game.\n\n"
+                f"Game size: {size_gb:.2f} GB\n"
+                f"Available space: {free_gb:.2f} GB\n\n"
+                "Please choose a different location with more free space."
+            )
+            return
+    except Exception as e:
+        print(f"Error checking disk space: {e}")
+        # Continue anyway
+    
+    # Confirm move
+    reply = QMessageBox.question(
+        window,
+        "Confirm Move",
+        f"Move {display_name} ({installed_os} version) from:\n\n"
+        f"{current_game_folder}\n\n"
+        f"to:\n\n"
+        f"{new_game_folder}?",
+        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+    )
+    
+    if reply != QMessageBox.StandardButton.Yes:
+        return
+    
+    # Perform the move
+    try:
+        percentage_label.setText(f"Moving {display_name}...")
+        QApplication.processEvents()
+        
+        # Create parent directory if it doesn't exist
+        os.makedirs(new_parent, exist_ok=True)
+        
+        # Move the folder
+        shutil.move(current_game_folder, new_game_folder)
+        
+        # Update saved_paths - new path is the parent directory (where the game folder is located)
+        saved_paths[installed_os][game_id] = new_parent
+        
+        # Save the updated paths
+        with open(saved_paths_file, 'w') as f:
+            json.dump(saved_paths, f, indent=2)
+        
+        percentage_label.setText(f"Moved {display_name} successfully!")
+        QMessageBox.information(window, "Success", f"{display_name} has been moved successfully.")
+        
+        # Update UI
+        update_installed_opacity()
+        
+    except Exception as e:
+        QMessageBox.critical(window, "Move Failed", f"Failed to move game: {e}")
+        percentage_label.setText("Move failed")
+
+def get_folder_size(folder_path):
+    """Calculate total size of a folder in bytes"""
+    total_size = 0
+    for dirpath, dirnames, filenames in os.walk(folder_path):
+        for filename in filenames:
+            filepath = os.path.join(dirpath, filename)
+            if os.path.exists(filepath):
+                try:
+                    total_size += os.path.getsize(filepath)
+                except (OSError, PermissionError):
+                    pass
+    return total_size
+
+def get_free_disk_space(path):
+    """Get free disk space for a given path in bytes"""
+    if isWindows:
+        import ctypes
+        free_bytes = ctypes.c_ulonglong(0)
+        ctypes.windll.kernel32.GetDiskFreeSpaceExW(
+            ctypes.c_wchar_p(path), 
+            None, 
+            None, 
+            ctypes.pointer(free_bytes)
+        )
+        return free_bytes.value
+    else:
+        stat = shutil.disk_usage(path)
+        return stat.free
+
+def check_disk_space(path, required_bytes):
+    """Check if there's enough disk space at the given path"""
+    try:
+        free_space = get_free_disk_space(path)
+        # Add 10% buffer for extraction overhead
+        required_with_buffer = required_bytes * 1.1
+        return free_space >= required_with_buffer, free_space
+    except Exception as e:
+        print(f"Error checking disk space: {e}")
+        return True, 0  # Assume enough space if we can't check
 
 # --- PROTON INSTALLATION LOGIC ---
 def install_proton_ge():
@@ -699,6 +899,34 @@ def download_and_play_game():
 
     selected_parent = QFileDialog.getExistingDirectory(window, "Select Download Directory", download_path)
     if not selected_parent: return
+
+    # Check disk space before proceeding with download
+    try:
+        game_size = int(game_data['size_in_bytes'])
+        has_space, free_space = check_disk_space(selected_parent, game_size)
+        
+        if not has_space:
+            game_size_gb = game_size / (1024**3)
+            free_space_gb = free_space / (1024**3)
+            required_gb = game_size * 1.1 / (1024**3)  # With 10% buffer
+            
+            reply = QMessageBox.warning(
+                window,
+                "Insufficient Disk Space",
+                f"Warning: Not enough disk space for {display_name}.\n\n"
+                f"Game size: {game_size_gb:.2f} GB\n"
+                f"Available space: {free_space_gb:.2f} GB\n"
+                f"Required (with buffer): {required_gb:.2f} GB\n\n"
+                "Downloading may fail or cause system issues.\n"
+                "Do you want to continue anyway?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No
+            )
+            
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+    except ValueError:
+        pass  # Size not available, skip check
 
     target_dir = os.path.join(selected_parent)
     os.makedirs(target_dir, exist_ok=True)
