@@ -24,7 +24,7 @@ isLinux = platform.system() == 'Linux'
 
 OS = platform.system()
 
-version = "1.3.1"
+version = "1.4.0"
 
 # --- PROTON CONFIGURATION (Linux Only) ---
 PROTON_GE_VERSION = "GE-Proton10-27"
@@ -69,6 +69,10 @@ class OpacityDelegate(QStyledItemDelegate):
     def paint(self, painter, option, index):
         game_title_with_emoji = index.data(Qt.ItemDataRole.DisplayRole)
         game_title = game_title_with_emoji[2:].strip() if game_title_with_emoji else ""
+        
+        # Remove the (Windows) suffix for comparison on Linux
+        if isLinux and game_title.endswith(" (Windows)"):
+            game_title = game_title[:-10].strip()
 
         if game_title in self.installed_games:
             painter.setOpacity(1.0)
@@ -84,6 +88,7 @@ class OpacityDelegate(QStyledItemDelegate):
 # Global dictionary to track which OS a game belongs to (Crucial for Linux running Windows games)
 # Format: { "game_id": "Windows" } or { "game_id": "Linux" }
 game_origin_os = {}
+game_available_versions = {}
 
 def _fetch_remote(path, as_json=False, timeout=10, default=None, os_override=None):
     """
@@ -105,46 +110,71 @@ def _fetch_remote(path, as_json=False, timeout=10, default=None, os_override=Non
         return {} if as_json else []
 
 def download_game_list():
-    global game_origin_os
-    
+    global game_origin_os, game_available_versions
+
+    # reset tracking
+    game_available_versions = {}
+
     # 1. Fetch Native Games
     native_list = _fetch_remote("list.txt", as_json=False, default=[])
-    
-    # Register native games
+
     for line in native_list:
         parts = line.split('|')
         if len(parts) > 1:
-            game_origin_os[parts[1]] = OS
+            game_id = parts[1]
+            game_origin_os[game_id] = OS
+            game_available_versions.setdefault(game_id, set()).add(OS)
 
     # 2. If Linux, also fetch Windows games
     if isLinux:
-        windows_list = _fetch_remote("list.txt", as_json=False, default=[], os_override="Windows")
-        
-        # Merge lists, but prefer Native (Linux) if a game ID exists in both
+        windows_list = _fetch_remote(
+            "list.txt",
+            as_json=False,
+            default=[],
+            os_override="Windows"
+        )
+
         existing_ids = set(game_origin_os.keys())
-        
+
         for line in windows_list:
             parts = line.split('|')
             if len(parts) > 1:
-                g_id = parts[1]
-                if g_id not in existing_ids:
-                    # It's a Windows-only game, add it
+                game_id = parts[1]
+
+                # Always record Windows availability
+                game_available_versions.setdefault(game_id, set()).add("Windows")
+
+                # Only add to display list if Linux version does not exist
+                if game_id not in existing_ids:
                     native_list.append(line)
-                    game_origin_os[g_id] = "Windows"
-    
+                    game_origin_os[game_id] = "Windows"
+
     return native_list
 
 def download_executable_paths():
-    # Fetch Native paths
-    paths = _fetch_remote("executable_paths.json", as_json=True, default={})
-    
-    # If Linux, merge Windows paths for the Windows games
+    """
+    Returns executable paths per OS.
+    Format:
+    {
+        "Linux":   { game_id: "path/to/game.x86_64" },
+        "Windows": { game_id: "path/to/game.exe" },
+        "Darwin":  { ... }
+    }
+    """
+    paths = {}
+
+    # Native OS paths
+    paths[OS] = _fetch_remote("executable_paths.json", as_json=True, default={})
+
+    # On Linux, also fetch Windows paths
     if isLinux:
-        win_paths = _fetch_remote("executable_paths.json", as_json=True, default={}, os_override="Windows")
-        # Update dict, but keep existing (native) keys if they exist
-        for k, v in win_paths.items():
-            if k not in paths:
-                paths[k] = v
+        paths["Windows"] = _fetch_remote(
+            "executable_paths.json",
+            as_json=True,
+            default={},
+            os_override="Windows"
+        )
+
     return paths
 
 def download_prereq_paths(os_override=None):
@@ -152,15 +182,42 @@ def download_prereq_paths(os_override=None):
     target_os = os_override if os_override else OS
     return _fetch_remote("prereq_paths.json", as_json=True, default={}, os_override=target_os)
 
+# Load or migrate saved_paths
 if not os.path.exists(saved_paths_file):
-    with open(saved_paths_file, 'w') as f:
-        json.dump({}, f)
-
-try:
-    with open(saved_paths_file, 'r') as f:
-        saved_paths = json.load(f)
-except Exception:
     saved_paths = {}
+    with open(saved_paths_file, 'w') as f:
+        json.dump(saved_paths, f)
+else:
+    try:
+        with open(saved_paths_file, 'r') as f:
+            saved_paths = json.load(f)
+            
+        # Check if old format (flat dictionary) and convert to new format
+        if saved_paths and not any(key in saved_paths for key in ["Windows", "Linux", "Darwin"]):
+            print("Migrating old saved_paths format to new format...")
+            migrated_saved_paths = {}
+            for os_name in ["Windows", "Linux", "Darwin"]:
+                migrated_saved_paths[os_name] = {}
+            
+            # Move old entries to current OS
+            for game_id, path in saved_paths.items():
+                migrated_saved_paths[OS][game_id] = path
+            
+            saved_paths = migrated_saved_paths
+            
+            # Save migrated format
+            with open(saved_paths_file, 'w') as f:
+                json.dump(saved_paths, f, indent=2)
+            
+            print("Migration completed successfully.")
+    except Exception as e:
+        print(f"Error loading saved_paths: {e}")
+        saved_paths = {}
+
+# Initialize OS keys if they don't exist
+for os_name in ["Windows", "Linux", "Darwin"]:
+    if os_name not in saved_paths:
+        saved_paths[os_name] = {}
 
 def parse_game_entry(selected_game_entry):
     fields = selected_game_entry.split('|')
@@ -191,25 +248,44 @@ delegate = OpacityDelegate(game_list_widget)
 game_list_widget.setItemDelegate(delegate)
 
 def update_installed_opacity():
-    installed_display_names = [
-        parse_game_entry(game)['display_name']
-        for game in game_list
-        if parse_game_entry(game)['game_id'] in saved_paths
-    ]
+    installed_display_names = []
+    
+    for game in game_list:
+        game_data = parse_game_entry(game)
+        game_id = game_data['game_id']
+        display_name = game_data['display_name']
+        
+        # Check if game is installed for any OS (for Linux, show as installed if either Linux or Windows version is installed)
+        is_installed = False
+        
+        if isLinux:
+            # On Linux, a game is considered installed if either Linux or Windows version is installed
+            is_installed = (game_id in saved_paths["Linux"]) or (game_id in saved_paths["Windows"])
+        else:
+            # On other OSes, only check current OS
+            is_installed = game_id in saved_paths[OS]
+        
+        if is_installed:
+            installed_display_names.append(display_name)
+    
     delegate.set_installed_games(installed_display_names)
     game_list_widget.viewport().update()
 
 update_installed_opacity()
 
+# Track which OS version to download for each game on Linux
+linux_download_choice = {}  # {game_id: "Linux" or "Windows"}
+
 for game in game_list:
     game_data = parse_game_entry(game)
     display_name = game_data['display_name']
+    game_id = game_data['game_id']
     multiplayer_status = game_data['multiplayer_status']
     
-    # Visual indicator for Windows games on Linux? 
-    # Optional: You could add " (Win)" to display name, but OpacityDelegate might need adjustment.
-    # For now, we keep it clean.
-
+    # On Linux, add (Windows) prefix for Windows games
+    if isLinux and game_origin_os.get(game_id) == "Windows":
+        display_name = f"{display_name} (Windows)"
+    
     if multiplayer_status == '0':
         display_name = "🔴 " + display_name
     elif multiplayer_status == '1':
@@ -280,13 +356,20 @@ def on_game_selected():
     game_id = game_data['game_id']
     size_in_bytes = game_data['size_in_bytes']
     multiplayer_status = game_data['multiplayer_status']
+    
+    # Check if game is installed (for current OS or for Linux users, either Linux or Windows version)
+    is_installed = False
+    if isLinux:
+        is_installed = (game_id in saved_paths["Linux"]) or (game_id in saved_paths["Windows"])
+    else:
+        is_installed = game_id in saved_paths[OS]
 
-    if currently_downloading and currently_downloading_game != game_id and game_id not in saved_paths:
+    if currently_downloading and currently_downloading_game != game_id and not is_installed:
         download_play_button.setEnabled(False)
     else:
         download_play_button.setEnabled(True)
 
-    if game_id in saved_paths:
+    if is_installed:
         uninstall_button.setEnabled(True)
         download_play_button.setText("Play")
     else:
@@ -435,6 +518,15 @@ def install_proton_ge():
         currently_downloading = False
 
 
+def get_effective_game_os(game_id):
+    """
+    Returns the OS that should be used for launching the game,
+    respecting the user's Linux/Windows choice.
+    """
+    if isLinux and game_id in linux_download_choice:
+        return linux_download_choice[game_id]
+    return game_origin_os.get(game_id)
+
 def download_and_play_game():
     global currently_downloading_game, currently_downloading, saved_paths, download_cancel_requested, _current_download_response
 
@@ -452,30 +544,50 @@ def download_and_play_game():
     game_id = game_data['game_id']
 
     # --- LAUNCH LOGIC ---
-    if game_id in saved_paths:
+    # Check if game is installed (for current OS or for Linux users, either Linux or Windows version)
+    is_installed = False
+    installed_os = None
+    
+    if isLinux:
+        if game_id in saved_paths["Linux"]:
+            is_installed = True
+            installed_os = "Linux"
+        elif game_id in saved_paths["Windows"]:
+            is_installed = True
+            installed_os = "Windows"
+    else:
+        if game_id in saved_paths[OS]:
+            is_installed = True
+            installed_os = OS
+    
+    if is_installed:
         print(f"Launching game {display_name}...")
         
-        if game_id not in executable_paths:
-            QMessageBox.critical(window, "Error", f"Executable path for {display_name} not found.")
+        if installed_os not in executable_paths or game_id not in executable_paths[installed_os]:
+            QMessageBox.critical(
+                window,
+                "Error",
+                f"Executable path for {display_name} ({installed_os}) not found."
+            )
             return
-        
-        executable_relative_path = executable_paths[game_id]
-        game_install_path = saved_paths[game_id]
+
+        executable_relative_path = executable_paths[installed_os][game_id]
+
+        game_install_path = saved_paths[installed_os][game_id]
         game_exec_full_path = os.path.join(game_install_path, executable_relative_path)
         
         if not os.path.exists(game_exec_full_path):
             QMessageBox.critical(window, "Error", f"Executable not found at:\n{game_exec_full_path}")
             return
         
-        # Prerequisites check - Use the game's origin OS to get the correct prerequisites
-        game_os = game_origin_os.get(game_id, OS)
-        prereq_paths = download_prereq_paths(game_os)
+        # Prerequisites check - Use the installed OS to get the correct prerequisites
+        prereq_paths = download_prereq_paths(installed_os)
         if game_id in prereq_paths and prereq_paths[game_id]:
-            install_prerequisites(game_os)  # Pass the game's OS to install_prerequisites
+            install_prerequisites(installed_os)  # Pass the installed OS to install_prerequisites
 
         try:
             # --- LINUX + WINDOWS GAME (PROTON) HANDLING ---
-            if isLinux and game_origin_os.get(game_id) == "Windows":
+            if isLinux and installed_os == "Windows":
                 # Check if Proton exists
                 if not os.path.exists(PROTON_EXECUTABLE):
                     reply = QMessageBox.question(window, "Proton Missing", 
@@ -497,24 +609,16 @@ def download_and_play_game():
                 env = os.environ.copy()
                 env["STEAM_COMPAT_DATA_PATH"] = PROTON_PFX
                 env["STEAM_COMPAT_CLIENT_INSTALL_PATH"] = PROTON_PFX
+                env["WINEDLLOVERRIDES"] = "dinput8,d3d9,version,winmm=n,b" # This is for games that inject DLLs to load mods
                 
                 # Command: ./proton run "game.exe"
-                # cwd needs to be the Proton directory for some versions, or the game dir? 
-                # Proton usually prefers being run from its own dir or absolute path.
-                
                 cmd = [PROTON_EXECUTABLE, "run", game_exec_full_path]
-                
-                # We do NOT change CWD to the game folder here, Proton handles that via the run command usually.
-                # However, some games rely on CWD. 
-                # The user's script: STEAM... ./proton run "$1"
-                # implies we invoke proton. Proton "run" verb usually sets up the environment and runs the exe.
-                
                 subprocess.Popen(cmd, env=env)
                 
             elif isWindows:
                 # Windows native
                 subprocess.Popen([f"{game_exec_full_path}"], cwd=os.path.join(game_install_path, os.path.dirname(executable_relative_path)), shell=True)
-            elif isLinux:
+            elif isLinux and installed_os == "Linux":
                 # Linux native
                 subprocess.Popen([game_exec_full_path], cwd=os.path.dirname(game_exec_full_path))
             elif isMacOS:
@@ -532,15 +636,66 @@ def download_and_play_game():
         on_game_selected()
         return
 
+    # On Linux, ask which OS version to download if both are available
+    download_os = OS  # Default to current OS
+    
+    if isLinux:
+        game_os = game_origin_os.get(game_id, OS)
+        
+        # If game is available for both OSes, ask the user
+        if game_os == "Linux":
+            # Game is Linux native, but could also have Windows version
+            # Check if Windows version exists in the list
+            available = game_available_versions.get(game_id, set())
+            has_windows_version = ("Windows" in available) and ("Linux" in available)
+            
+            if has_windows_version:
+                msg = QMessageBox(window)
+                msg.setWindowTitle("Choose Version")
+                msg.setText(
+                    f"Which version of '{display_name}' would you like to download?"
+                )
+                msg.setInformativeText(
+                    "Linux: Native Linux version (recommended)\n"
+                    "Windows: Windows version (requires Proton)"
+                )
+
+                linux_btn = msg.addButton("Linux (Recommended)", QMessageBox.ButtonRole.AcceptRole)
+                windows_btn = msg.addButton("Windows (Proton)", QMessageBox.ButtonRole.DestructiveRole)
+                cancel_btn = msg.addButton(QMessageBox.StandardButton.Cancel)
+
+                msg.setDefaultButton(linux_btn)
+                msg.exec()
+
+                clicked = msg.clickedButton()
+
+                if clicked == linux_btn:
+                    download_os = "Linux"
+                elif clicked == windows_btn:
+                    download_os = "Windows"
+                    linux_download_choice[game_id] = "Windows"
+                else:
+                    return  # user cancelled
+            else:
+                download_os = "Linux"
+        elif game_os == "Windows":
+            # Game is Windows-only
+            download_os = "Windows"
+            linux_download_choice[game_id] = "Windows"
+
+    # Set up download directory - FIXED: Use the correct default path
     if isWindows:
-        os.makedirs(os.path.join(os.path.expandvars("%USERPROFILE%"), ".banditgamelauncher", "games"), exist_ok=True)
-        download_path = os.path.join(os.path.expandvars("%USERPROFILE%"), ".banditgamelauncher", "games")
+        default_download_dir = os.path.join(os.path.expandvars("%USERPROFILE%"), ".banditgamelauncher", "games")
+        os.makedirs(default_download_dir, exist_ok=True)
+        download_path = default_download_dir
     elif isMacOS:
-        os.makedirs(os.path.join(os.path.expanduser("~"), "Bandit Game Launcher", "games"), exist_ok=True)
-        download_path = os.path.join(os.path.expanduser("~"), "Bandit Game Launcher", "games")
+        default_download_dir = os.path.join(os.path.expanduser("~"), "Bandit Game Launcher", "games")
+        os.makedirs(default_download_dir, exist_ok=True)
+        download_path = default_download_dir
     elif isLinux:
-        os.makedirs(os.path.join(os.path.expanduser("~"), ".banditgamelauncher", "games"), exist_ok=True)
-        download_path = os.path.join(os.path.expanduser("~"), ".banditgamelauncher", "games")
+        default_download_dir = os.path.join(os.path.expanduser("~"), ".banditgamelauncher", "games")
+        os.makedirs(default_download_dir, exist_ok=True)
+        download_path = default_download_dir
 
     selected_parent = QFileDialog.getExistingDirectory(window, "Select Download Directory", download_path)
     if not selected_parent: return
@@ -551,13 +706,13 @@ def download_and_play_game():
     currently_downloading_game = game_id
     on_game_selected()
 
-    print(f"Downloading {display_name} to {target_dir}")
+    print(f"Downloading {display_name} ({download_os} version) to {target_dir}")
     currently_downloading = True
-    success = download_game(game_id, target_dir, display_name)
+    success = download_game(game_id, target_dir, display_name, download_os)
 
     if success:
-        percentage_label.setText("Downloaded " + display_name + " successfully!")
-        saved_paths[game_id] = target_dir
+        percentage_label.setText(f"Downloaded {display_name} ({download_os} version) successfully!")
+        saved_paths[download_os][game_id] = target_dir
         try:
             with open(saved_paths_file, 'w') as f:
                 json.dump(saved_paths, f, indent=2)
@@ -572,12 +727,14 @@ def download_and_play_game():
     on_game_selected()
     update_installed_opacity()
 
-def download_game(game_id, download_path, display_name=None):
+def download_game(game_id, download_path, display_name=None, target_os=None):
     global download_cancel_requested, _current_download_response, currently_downloading_game, currently_downloading
     
-    # Determine URL based on origin OS
-    origin = game_origin_os.get(game_id, OS) # default to current OS if unknown
-    url = f"https://thuis.felixband.nl/bandit/{origin}/{game_id}.tar.gz"
+    # Determine URL based on target OS
+    if target_os is None:
+        target_os = game_origin_os.get(game_id, OS)  # default to game's origin OS if unknown
+    
+    url = f"https://thuis.felixband.nl/bandit/{target_os}/{game_id}.tar.gz"
     
     success = False
     try:
@@ -616,7 +773,8 @@ def download_game(game_id, download_path, display_name=None):
                     downloaded_size += n
                     if total_size:
                         percent_done = (downloaded_size / total_size) * 100
-                        percentage_label.setText(f"Downloading {display_name}: {percent_done:.2f}% complete")
+                        os_label = f"({target_os})" if isLinux and target_os != OS else ""
+                        percentage_label.setText(f"Downloading {display_name} {os_label}: {percent_done:.2f}% complete")
                     else:
                         percentage_label.setText(f"Downloading {display_name}: {downloaded_size} bytes")
                     QApplication.processEvents()
@@ -666,14 +824,25 @@ def uninstall_game():
     game_id = game_data['game_id']
     display_name = game_data['display_name']
 
-    if game_id not in saved_paths: return
+    # Find which OS version is installed
+    installed_os = None
+    if isLinux:
+        if game_id in saved_paths["Linux"]:
+            installed_os = "Linux"
+        elif game_id in saved_paths["Windows"]:
+            installed_os = "Windows"
+    else:
+        if game_id in saved_paths[OS]:
+            installed_os = OS
+    
+    if installed_os is None: return
 
-    game_install_path = saved_paths[game_id]
-    executable_relative_path = executable_paths.get(game_id, "")
+    game_install_path = saved_paths[installed_os][game_id]
+    executable_relative_path = executable_paths.get(installed_os, {}).get(game_id, "")
     
     if not executable_relative_path:
         # Fallback just to remove from list if path missing
-        del saved_paths[game_id]
+        del saved_paths[installed_os][game_id]
         with open(saved_paths_file, 'w') as f: json.dump(saved_paths, f, indent=2)
         on_game_selected()
         update_installed_opacity()
@@ -692,7 +861,7 @@ def uninstall_game():
     if os.path.commonpath([base_path, uninstall_path]) != base_path: return
     
     if not os.path.exists(uninstall_path):
-         del saved_paths[game_id]
+         del saved_paths[installed_os][game_id]
          with open(saved_paths_file, 'w') as f: json.dump(saved_paths, f, indent=2)
          on_game_selected()
          update_installed_opacity()
@@ -701,19 +870,19 @@ def uninstall_game():
     confirm = QMessageBox.question(
         window,
         "Confirm Uninstall",
-        f"Are you sure you want to uninstall {display_name}?\n\nThis will delete:\n{uninstall_path}",
+        f"Are you sure you want to uninstall {display_name} ({installed_os} version)?\n\nThis will delete:\n{uninstall_path}",
         QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
     )
     if confirm != QMessageBox.StandardButton.Yes: return
 
     try:
         shutil.rmtree(uninstall_path)
-        del saved_paths[game_id]
+        del saved_paths[installed_os][game_id]
         with open(saved_paths_file, 'w') as f: json.dump(saved_paths, f, indent=2)
-        QMessageBox.information(window, "Uninstalled", f"{display_name} uninstalled.")
+        QMessageBox.information(window, "Uninstalled", f"{display_name} ({installed_os} version) uninstalled.")
         on_game_selected()
         update_installed_opacity()
-        percentage_label.setText("Uninstalled " + display_name)
+        percentage_label.setText(f"Uninstalled {display_name} ({installed_os})")
     except Exception as e:
         QMessageBox.critical(window, "Error", f"Uninstall failed: {e}")
 
@@ -732,18 +901,36 @@ def install_prerequisites(game_os=None):
     game_id = game_data['game_id']
     display_name = game_data['display_name']
 
-    # Use provided game_os or get from game_origin_os
-    if game_os is None:
-        game_os = game_origin_os.get(game_id, OS)
+    # Find which OS version is installed
+    installed_os = None
+    if isLinux:
+        if game_id in saved_paths["Linux"]:
+            installed_os = "Linux"
+        elif game_id in saved_paths["Windows"]:
+            installed_os = "Windows"
+    else:
+        if game_id in saved_paths[OS]:
+            installed_os = OS
+    
+    if installed_os is None:
+        # If not installed yet, use provided game_os or get from game_origin_os
+        if game_os is None:
+            game_os = game_origin_os.get(game_id, OS)
+        installed_os = game_os
 
     # Fetch prerequisites for the correct OS
-    prereq_paths = download_prereq_paths(game_os)
+    prereq_paths = download_prereq_paths(installed_os)
     
     if game_id not in prereq_paths or not prereq_paths[game_id]: 
         return
 
-    game_install_path = saved_paths[game_id]
-    executable_relative_path = executable_paths.get(game_id, "")
+    # Get the installation path for this OS version
+    if installed_os not in saved_paths or game_id not in saved_paths[installed_os]:
+        QMessageBox.warning(window, "Not Installed", f"{display_name} ({installed_os} version) is not installed.")
+        return
+    
+    game_install_path = saved_paths[installed_os][game_id]
+    executable_relative_path = executable_paths.get(installed_os, {}).get(game_id, "")
     
     normalized_path = os.path.normpath(executable_relative_path).lstrip(os.sep).lstrip("\\")
     parts = normalized_path.split(os.sep) if os.sep in normalized_path else normalized_path.split("\\")
@@ -752,14 +939,14 @@ def install_prerequisites(game_os=None):
     game_base_folder = os.path.realpath(os.path.join(game_install_path, first_folder))
     marker_path = os.path.join(game_base_folder, "prerequisites_installed.txt")
     if os.path.exists(marker_path):
-        percentage_label.setText(f"Prerequisites already installed for {display_name}.")
+        percentage_label.setText(f"Prerequisites already installed for {display_name} ({installed_os}).")
         return
 
     prereqs = prereq_paths[game_id]
-    reply = QMessageBox.question(window, "Install Prerequisites", f"Install {len(prereqs)} prerequisites for {display_name}?", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+    reply = QMessageBox.question(window, "Install Prerequisites", f"Install {len(prereqs)} prerequisites for {display_name} ({installed_os} version)?", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
     if reply != QMessageBox.StandardButton.Yes: return
 
-    percentage_label.setText(f"Installing prerequisites for {display_name}...")
+    percentage_label.setText(f"Installing prerequisites for {display_name} ({installed_os})...")
     QApplication.processEvents()
 
     for prereq in prereqs:
@@ -772,7 +959,7 @@ def install_prerequisites(game_os=None):
 
         try:
             # Check if we need to run via Proton (Windows game on Linux)
-            if isLinux and game_os == "Windows":
+            if isLinux and installed_os == "Windows":
                 print(f"Running Windows prerequisite via Proton: {full_path}")
                 env = os.environ.copy()
                 env["STEAM_COMPAT_DATA_PATH"] = PROTON_PFX
@@ -795,27 +982,43 @@ def install_prerequisites(game_os=None):
         with open(marker_path, "w") as f: f.write("Prerequisites installed.\n")
     except: pass
     
-    percentage_label.setText(f"Finished prerequisites for {display_name}.")
+    percentage_label.setText(f"Finished prerequisites for {display_name} ({installed_os}).")
     QMessageBox.information(window, "Done", f"Prerequisites installed.")
 
 def browse_file_location():
-    # (Same as before, abbreviated for space)
     selected_game_index = game_list_widget.currentRow()
     if selected_game_index == -1: return
     selected_game_entry = game_list[selected_game_index]
     game_id = parse_game_entry(selected_game_entry)['game_id']
-    if game_id not in saved_paths: return
     
-    path = saved_paths[game_id]
-    exe_path = executable_paths.get(game_id, "")
-    # ... logic to find folder ...
+    # Find which OS version is installed
+    installed_os = None
+    if isLinux:
+        if game_id in saved_paths["Linux"]:
+            installed_os = "Linux"
+        elif game_id in saved_paths["Windows"]:
+            installed_os = "Windows"
+    else:
+        if game_id in saved_paths[OS]:
+            installed_os = OS
+    
+    if installed_os is None: return
+    
+    path = saved_paths[installed_os][game_id]
+    exe_path = executable_paths.get(installed_os, {}).get(game_id, "")
+    
+    # Logic to find folder
     parts = exe_path.replace("\\", "/").split("/")
     first = parts[0] if parts else ""
     target = os.path.join(path, first)
     
-    if isWindows: os.startfile(target)
-    elif isMacOS: subprocess.run(["open", "-R", target])
-    elif isLinux: subprocess.run(["xdg-open", target])
+    if os.path.exists(target):
+        if isWindows:
+            os.startfile(target)
+        elif isMacOS:
+            subprocess.run(["open", "-R", target])
+        elif isLinux:
+            subprocess.run(["xdg-open", target])
 
 uninstall_button.clicked.connect(uninstall_game)
 
