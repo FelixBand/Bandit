@@ -27,7 +27,7 @@ OS = platform.system()
 version = "1.5.0"
 
 # --- PROTON CONFIGURATION (Linux Only) ---
-PROTON_GE_VERSION = "GE-Proton10-27"
+PROTON_GE_VERSION = "GE-Proton10-28"
 PROTON_DOWNLOAD_URL = f"https://github.com/GloriousEggroll/proton-ge-custom/releases/download/{PROTON_GE_VERSION}/{PROTON_GE_VERSION}.tar.gz"
 # Install Proton to ~/.local/share/bandit/Proton-GE
 PROTON_INSTALL_DIR = os.path.expanduser(f"~/.local/share/banditgamelauncher/{PROTON_GE_VERSION}")
