@@ -177,6 +177,27 @@ def download_executable_paths():
 
     return paths
 
+def download_icon_paths():
+    """
+    Returns icon paths per OS.
+    Same structure as executable_paths.
+    """
+    paths = {}
+
+    # Native OS
+    paths[OS] = _fetch_remote("icon_paths.json", as_json=True, default={})
+
+    # Linux also needs Windows icons for Proton games
+    if isLinux:
+        paths["Windows"] = _fetch_remote(
+            "icon_paths.json",
+            as_json=True,
+            default={},
+            os_override="Windows"
+        )
+
+    return paths
+
 def download_prereq_paths(os_override=None):
     """Fetch prerequisite paths for a specific OS"""
     target_os = os_override if os_override else OS
@@ -231,6 +252,8 @@ def parse_game_entry(selected_game_entry):
 
 def sort_game_list(game_list):
     return sorted(game_list, key=lambda x: x.split('|')[0].lower())
+
+icon_paths = download_icon_paths()
 
 executable_paths = download_executable_paths()
 game_list = download_game_list() # This now populates game_origin_os
@@ -405,11 +428,14 @@ def show_context_menu(position):
     menu = QMenu()
     browse_action = menu.addAction("Browse File Location")
     move_action = menu.addAction("Move Game to Another Location")
+    shortcut_action = menu.addAction("Create Desktop Shortcut")
     action = menu.exec(game_list_widget.viewport().mapToGlobal(position))
     if action == browse_action:
         browse_file_location()
     elif action == move_action:
         move_game()
+    elif action == shortcut_action:
+        create_desktop_shortcut()
 
 game_list_widget.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
 game_list_widget.customContextMenuRequested.connect(show_context_menu)
@@ -1247,6 +1273,155 @@ def browse_file_location():
             subprocess.run(["open", "-R", target])
         elif isLinux:
             subprocess.run(["xdg-open", target])
+
+def get_desktop_path():
+    """Return the current user's Desktop folder path (best-effort across OSes)."""
+    home = os.path.expanduser("~")
+    # macOS/Windows default
+    desktop = os.path.join(home, "Desktop")
+
+    # Linux: try to read XDG user dirs
+    if isLinux:
+        try:
+            config = os.path.join(home, ".config", "user-dirs.dirs")
+            if os.path.exists(config):
+                with open(config, "r", encoding="utf-8") as f:
+                    for line in f:
+                        if line.startswith("XDG_DESKTOP_DIR"):
+                            val = line.split("=")[1].strip().strip('"')
+                            val = val.replace("$HOME", home)
+                            desktop = os.path.expandvars(val)
+                            break
+        except Exception:
+            pass
+    return desktop
+
+def create_desktop_shortcut():
+    """Create a desktop shortcut/alias/link for the currently selected game."""
+    selected_game_index = game_list_widget.currentRow()
+    if selected_game_index == -1:
+        QMessageBox.warning(window, "No Game Selected", "Please select a game first.")
+        return
+
+    selected_game_entry = game_list[selected_game_index]
+    game_data = parse_game_entry(selected_game_entry)
+    game_id = game_data['game_id']
+    display_name = game_data['display_name']
+
+    # Determine which installed OS version to use (same logic used elsewhere)
+    installed_os = None
+    if isLinux:
+        if game_id in saved_paths["Linux"]:
+            installed_os = "Linux"
+        elif game_id in saved_paths["Windows"]:
+            installed_os = "Windows"
+    else:
+        if game_id in saved_paths[OS]:
+            installed_os = OS
+
+    if installed_os is None:
+        QMessageBox.warning(window, "Not Installed", f"{display_name} is not installed.")
+        return
+
+    # Resolve executable relative path and full path
+    executable_relative_path = executable_paths.get(installed_os, {}).get(game_id, "")
+    game_install_path = saved_paths[installed_os][game_id]
+    game_exec_full_path = os.path.join(game_install_path, executable_relative_path) if executable_relative_path else game_install_path
+    game_exec_full_path = os.path.normpath(game_exec_full_path)
+
+    icon_path = resolve_icon_path(installed_os, game_id, game_install_path)
+
+    if not os.path.exists(game_exec_full_path):
+        QMessageBox.warning(window, "Executable Missing", f"Executable not found:\n{game_exec_full_path}")
+        return
+
+    desktop = get_desktop_path()
+    os.makedirs(desktop, exist_ok=True)
+
+    try:
+        if isWindows:
+            # Prefer win32com if available to create a real .lnk
+            try:
+                from win32com.client import Dispatch
+                shortcut_path = os.path.join(desktop, f"{display_name}.lnk")
+                shell = Dispatch('WScript.Shell')
+                shortcut = shell.CreateShortCut(shortcut_path)
+                shortcut.Targetpath = game_exec_full_path
+                shortcut.WorkingDirectory = os.path.dirname(game_exec_full_path)
+                shortcut.IconLocation = icon_path if icon_path else game_exec_full_path
+                shortcut.save()
+            except Exception:
+                # Fallback to .url which also works as a clickable link
+                url_path = os.path.join(desktop, f"{display_name}.url")
+                with open(url_path, "w", encoding="utf-8") as f:
+                    f.write("[InternetShortcut]\n")
+                    f.write("URL=file:///" + game_exec_full_path.replace("\\", "/") + "\n")
+
+                    icon_src = icon_path if icon_path else game_exec_full_path
+                    f.write("IconFile=" + icon_src + "\n")
+                    f.write("IconIndex=0\n")
+
+
+        elif isMacOS:
+            # Make a Finder alias using AppleScript
+            # The alias will be created on the desktop
+            # Use POSIX paths
+            as_cmd = f'tell application "Finder" to make alias file to (POSIX file "{game_exec_full_path}") at (POSIX file "{desktop}")'
+            subprocess.run(["osascript", "-e", as_cmd], check=False)
+
+            if icon_path:
+                copy_icon_cmd = f'''
+                set src to POSIX file "{icon_path}"
+                set dst to POSIX file "{os.path.join(desktop, display_name)}"
+                tell application "Finder"
+                    set icon of dst to icon of src
+                end tell
+                '''
+                subprocess.run(["osascript", "-e", copy_icon_cmd], check=False)
+
+
+        elif isLinux:
+            # Create a freedesktop .desktop file
+            desktop_file = os.path.join(desktop, f"{display_name}.desktop")
+
+            # If a Windows exe and user's install uses Proton, create Exec that runs via proton
+            if installed_os == "Windows":
+                if os.path.exists(PROTON_EXECUTABLE):
+                    exec_cmd = f'"{PROTON_EXECUTABLE}" run "{game_exec_full_path}"'
+                else:
+                    # fallback: try xdg-open (may not work for .exe, but we still provide a link)
+                    exec_cmd = f'xdg-open "{game_exec_full_path}"'
+            else:
+                exec_cmd = f'"{game_exec_full_path}"'
+
+            desktop_entry = [
+                "[Desktop Entry]",
+                f"Name={display_name}",
+                f"Exec={exec_cmd}",
+                "Type=Application",
+                f"Path={os.path.dirname(game_exec_full_path)}",
+                f"Icon={icon_path if icon_path else os.path.splitext(game_exec_full_path)[0]}",
+                "Terminal=false"
+            ]
+            with open(desktop_file, "w", encoding="utf-8") as f:
+                f.write("\n".join(desktop_entry))
+            # Make it executable
+            try:
+                os.chmod(desktop_file, 0o755)
+            except Exception:
+                pass
+
+        QMessageBox.information(window, "Shortcut Created", f"Desktop shortcut created for {display_name}.")
+    except Exception as e:
+        QMessageBox.critical(window, "Error", f"Failed to create shortcut: {e}")
+
+def resolve_icon_path(installed_os, game_id, game_install_path):
+    rel_icon = icon_paths.get(installed_os, {}).get(game_id)
+    if not rel_icon:
+        return None
+
+    icon_full = os.path.normpath(os.path.join(game_install_path, rel_icon))
+    return icon_full if os.path.exists(icon_full) else None
 
 uninstall_button.clicked.connect(uninstall_game)
 
