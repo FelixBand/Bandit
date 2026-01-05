@@ -1,5 +1,6 @@
 import sys
 import requests
+import re
 import json
 import gzip
 import tarfile
@@ -1296,6 +1297,25 @@ def get_desktop_path():
             pass
     return desktop
 
+def sanitize_filename(name):
+    """
+    Make a string safe for use as a filename on all OSes.
+    """
+    # Remove emojis and leading status icons if present
+    name = re.sub(r'^[^\w\s]+', '', name).strip()
+
+    # Replace illegal filename characters
+    name = re.sub(r'[\\/:*?"<>|]', '_', name)
+
+    # Collapse whitespace
+    name = re.sub(r'\s+', ' ', name).strip()
+
+    # Windows: no trailing dots or spaces
+    name = name.rstrip('. ')
+
+    # Fallback name
+    return name if name else "Game"
+
 def create_desktop_shortcut():
     """Create a desktop shortcut/alias/link for the currently selected game."""
     selected_game_index = game_list_widget.currentRow()
@@ -1307,6 +1327,8 @@ def create_desktop_shortcut():
     game_data = parse_game_entry(selected_game_entry)
     game_id = game_data['game_id']
     display_name = game_data['display_name']
+    safe_name = sanitize_filename(display_name)
+
 
     # Determine which installed OS version to use (same logic used elsewhere)
     installed_os = None
@@ -1343,7 +1365,7 @@ def create_desktop_shortcut():
             # Prefer win32com if available to create a real .lnk
             try:
                 from win32com.client import Dispatch
-                shortcut_path = os.path.join(desktop, f"{display_name}.lnk")
+                shortcut_path = os.path.join(desktop, f"{safe_name}.lnk")
                 shell = Dispatch('WScript.Shell')
                 shortcut = shell.CreateShortCut(shortcut_path)
                 shortcut.Targetpath = game_exec_full_path
@@ -1352,7 +1374,7 @@ def create_desktop_shortcut():
                 shortcut.save()
             except Exception:
                 # Fallback to .url which also works as a clickable link
-                url_path = os.path.join(desktop, f"{display_name}.url")
+                url_path = os.path.join(desktop, f"{safe_name}.url")
                 with open(url_path, "w", encoding="utf-8") as f:
                     f.write("[InternetShortcut]\n")
                     f.write("URL=file:///" + game_exec_full_path.replace("\\", "/") + "\n")
@@ -1366,7 +1388,13 @@ def create_desktop_shortcut():
             # Make a Finder alias using AppleScript
             # The alias will be created on the desktop
             # Use POSIX paths
-            as_cmd = f'tell application "Finder" to make alias file to (POSIX file "{game_exec_full_path}") at (POSIX file "{desktop}")'
+            as_cmd = (
+                f'tell application "Finder" to make alias file to '
+                f'(POSIX file "{game_exec_full_path}") '
+                f'at (POSIX file "{desktop}") '
+                f'with properties {{name:"{safe_name}"}}'
+            )
+
             subprocess.run(["osascript", "-e", as_cmd], check=False)
 
             if icon_path:
@@ -1382,7 +1410,7 @@ def create_desktop_shortcut():
 
         elif isLinux:
             # Create a freedesktop .desktop file
-            desktop_file = os.path.join(desktop, f"{display_name}.desktop")
+            desktop_file = os.path.join(desktop, f"{safe_name}.desktop")
 
             # If a Windows exe and user's install uses Proton, create Exec that runs via proton
             if installed_os == "Windows":
