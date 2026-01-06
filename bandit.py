@@ -25,7 +25,7 @@ isLinux = platform.system() == 'Linux'
 
 OS = platform.system()
 
-version = "1.5.0"
+version = "1.6.0"
 
 # --- PROTON CONFIGURATION (Linux Only) ---
 PROTON_GE_VERSION = "GE-Proton10-28"
@@ -587,6 +587,14 @@ def move_game():
         # Save the updated paths
         with open(saved_paths_file, 'w') as f:
             json.dump(saved_paths, f, indent=2)
+
+        # Recreate desktop shortcut if it existed
+        had_shortcut = desktop_shortcut_exists(display_name)
+
+        if had_shortcut:
+            remove_desktop_shortcut(display_name)
+            create_desktop_shortcut()
+
         
         percentage_label.setText(f"Moved {display_name} successfully!")
         QMessageBox.information(window, "Success", f"{display_name} has been moved successfully.")
@@ -1069,6 +1077,47 @@ def cancel_download(game_id):
     percentage_label.setText("Download cancelled")
     QApplication.processEvents()
 
+def remove_desktop_shortcut(display_name):
+    desktop = get_desktop_path()
+    safe_name = sanitize_filename(display_name)
+
+    candidates = []
+
+    if isWindows:
+        candidates.extend([
+            os.path.join(desktop, f"{safe_name}.lnk"),
+            os.path.join(desktop, f"{safe_name}.url"),
+        ])
+    elif isMacOS:
+        candidates.append(os.path.join(desktop, safe_name))  # Finder alias
+    elif isLinux:
+        candidates.append(os.path.join(desktop, f"{safe_name}.desktop"))
+
+    for path in candidates:
+        try:
+            if os.path.exists(path):
+                os.remove(path)
+        except Exception as e:
+            print(f"Failed to remove shortcut {path}: {e}")
+
+def desktop_shortcut_exists(display_name):
+    desktop = get_desktop_path()
+    safe_name = sanitize_filename(display_name)
+
+    paths = []
+
+    if isWindows:
+        paths.extend([
+            os.path.join(desktop, f"{safe_name}.lnk"),
+            os.path.join(desktop, f"{safe_name}.url"),
+        ])
+    elif isMacOS:
+        paths.append(os.path.join(desktop, safe_name))
+    elif isLinux:
+        paths.append(os.path.join(desktop, f"{safe_name}.desktop"))
+
+    return any(os.path.exists(p) for p in paths)
+
 def uninstall_game():
     global saved_paths
     selected_game_index = game_list_widget.currentRow()
@@ -1132,6 +1181,7 @@ def uninstall_game():
 
     try:
         shutil.rmtree(uninstall_path)
+        remove_desktop_shortcut(display_name)
         del saved_paths[installed_os][game_id]
         with open(saved_paths_file, 'w') as f: json.dump(saved_paths, f, indent=2)
         QMessageBox.information(window, "Uninstalled", f"{display_name} ({installed_os} version) uninstalled.")
@@ -1415,12 +1465,14 @@ def create_desktop_shortcut():
             # If a Windows exe and user's install uses Proton, create Exec that runs via proton
             if installed_os == "Windows":
                 if os.path.exists(PROTON_EXECUTABLE):
-                    exec_cmd = f'"{PROTON_EXECUTABLE}" run "{game_exec_full_path}"'
+                    exec_cmd = (
+                        f'STEAM_COMPAT_DATA_PATH={PROTON_PFX} '
+                        f'STEAM_COMPAT_CLIENT_INSTALL_PATH={PROTON_PFX} '
+                        f'WINEDLLOVERRIDES="dinput8,d3d9,version,steamoverlay64,winmm=n,b" '
+                        f'"{PROTON_EXECUTABLE}" run "{game_exec_full_path}"'
+                    )
                 else:
-                    # fallback: try xdg-open (may not work for .exe, but we still provide a link)
                     exec_cmd = f'xdg-open "{game_exec_full_path}"'
-            else:
-                exec_cmd = f'"{game_exec_full_path}"'
 
             desktop_entry = [
                 "[Desktop Entry]",
