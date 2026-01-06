@@ -1459,10 +1459,9 @@ def create_desktop_shortcut():
 
 
         elif isLinux:
-            # Create a freedesktop .desktop file
             desktop_file = os.path.join(desktop, f"{safe_name}.desktop")
+            exec_cmd = None
 
-            # If a Windows exe and user's install uses Proton, create Exec that runs via proton
             if installed_os == "Windows":
                 if os.path.exists(PROTON_EXECUTABLE):
                     exec_cmd = (
@@ -1473,6 +1472,11 @@ def create_desktop_shortcut():
                     )
                 else:
                     exec_cmd = f'xdg-open "{game_exec_full_path}"'
+            else:
+                exec_cmd = f'"{game_exec_full_path}"'
+
+            if not exec_cmd:
+                raise RuntimeError("Failed to build Exec command for Linux shortcut")
 
             desktop_entry = [
                 "[Desktop Entry]",
