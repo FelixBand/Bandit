@@ -836,7 +836,7 @@ def download_and_play_game():
                 env = os.environ.copy()
                 env["STEAM_COMPAT_DATA_PATH"] = PROTON_PFX
                 env["STEAM_COMPAT_CLIENT_INSTALL_PATH"] = PROTON_PFX
-                env["WINEDLLOVERRIDES"] = "dinput8,d3d9,version,winmm=n,b" # This is for games that inject DLLs to load mods
+                env["WINEDLLOVERRIDES"] = "dinput8,d3d9,version,steamoverlay64,winmm=n,b" # This is for games that inject DLLs to load mods
                 
                 # Command: ./proton run "game.exe"
                 cmd = [PROTON_EXECUTABLE, "run", game_exec_full_path]
