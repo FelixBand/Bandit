@@ -71,8 +71,8 @@ class OpacityDelegate(QStyledItemDelegate):
         game_title_with_emoji = index.data(Qt.ItemDataRole.DisplayRole)
         game_title = game_title_with_emoji[2:].strip() if game_title_with_emoji else ""
         
-        # Remove the (Windows) suffix for comparison on Linux
-        if isLinux and game_title.endswith(" (Windows)"):
+        # Remove the 🪟 prefix for comparison on Linux
+        if isLinux and game_title.startswith("🪟 "):
             game_title = game_title[:-10].strip()
 
         if game_title in self.installed_games:
@@ -308,7 +308,7 @@ for game in game_list:
     
     # On Linux, add (Windows) prefix for Windows games
     if isLinux and game_origin_os.get(game_id) == "Windows":
-        display_name = f"{display_name} (Windows)"
+        display_name = f"🪟 {display_name}"
     
     if multiplayer_status == '0':
         display_name = "🔴 " + display_name
