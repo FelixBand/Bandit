@@ -25,7 +25,7 @@ isLinux = platform.system() == 'Linux'
 
 OS = platform.system()
 
-version = "1.6.0"
+version = "1.6.1"
 
 # --- PROTON CONFIGURATION (Linux Only) ---
 PROTON_GE_VERSION = "GE-Proton10-28"
@@ -811,14 +811,14 @@ def download_and_play_game():
         game_install_path = saved_paths[installed_os][game_id]
         game_exec_full_path = os.path.join(game_install_path, executable_relative_path)
         
-        if not os.path.exists(game_exec_full_path):
-            QMessageBox.critical(window, "Error", f"Executable not found at:\n{game_exec_full_path}")
-            return
-        
         # Prerequisites check - Use the installed OS to get the correct prerequisites
         prereq_paths = download_prereq_paths(installed_os)
         if game_id in prereq_paths and prereq_paths[game_id]:
             install_prerequisites(installed_os)  # Pass the installed OS to install_prerequisites
+
+        if not os.path.exists(game_exec_full_path):
+            QMessageBox.critical(window, "Error", f"Executable not found at:\n{game_exec_full_path}")
+            return
 
         try:
             # --- LINUX + WINDOWS GAME (PROTON) HANDLING ---
