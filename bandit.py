@@ -25,10 +25,10 @@ isLinux = platform.system() == 'Linux'
 
 OS = platform.system()
 
-version = "1.6.1"
+version = "1.6.2"
 
 # --- PROTON CONFIGURATION (Linux Only) ---
-PROTON_GE_VERSION = "GE-Proton10-28"
+PROTON_GE_VERSION = "GE-Proton10-34"
 PROTON_DOWNLOAD_URL = f"https://github.com/GloriousEggroll/proton-ge-custom/releases/download/{PROTON_GE_VERSION}/{PROTON_GE_VERSION}.tar.gz"
 # Install Proton to ~/.local/share/bandit/Proton-GE
 PROTON_INSTALL_DIR = os.path.expanduser(f"~/.local/share/banditgamelauncher/{PROTON_GE_VERSION}")
@@ -844,7 +844,7 @@ def download_and_play_game():
                 env = os.environ.copy()
                 env["STEAM_COMPAT_DATA_PATH"] = PROTON_PFX
                 env["STEAM_COMPAT_CLIENT_INSTALL_PATH"] = PROTON_PFX
-                env["WINEDLLOVERRIDES"] = "dinput8,d3d9,version,steamoverlay64,winmm=n,b" # This is for games that inject DLLs to load mods
+                env["WINEDLLOVERRIDES"] = "dinput8,d3d9,version,steamoverlay64,winmm,winhttp=n,b" # This is for games that inject DLLs to load mods
                 
                 # Command: ./proton run "game.exe"
                 cmd = [PROTON_EXECUTABLE, "run", game_exec_full_path]
