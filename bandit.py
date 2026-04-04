@@ -1300,11 +1300,6 @@ def install_prerequisites(game_os=None):
     percentage_label.setText(f"Finished prerequisites for {display_name} ({installed_os}).")
     QMessageBox.information(window, "Done", f"Prerequisites installed.")
 
-import tempfile
-import ctypes
-import os
-import time
-
 def run_prereqs_elevated(prereq_entries, game_base_folder, marker_path):
     # Remove old marker so we don't instantly succeed
     if os.path.exists(marker_path):
@@ -1324,7 +1319,12 @@ def run_prereqs_elevated(prereq_entries, game_base_folder, marker_path):
 
         full_path = os.path.join(game_base_folder, rel_path.lstrip("/").lstrip("\\"))
 
-        cmd = f'cd /d "{os.path.dirname(full_path)}" && "{full_path}" {cmd_args}'
+        if full_path.lower().endswith((".bat", ".cmd")):
+            exec_part = f'call "{full_path}" {cmd_args}'
+        else:
+            exec_part = f'"{full_path}" {cmd_args}'
+
+        cmd = f'cd /d "{os.path.dirname(full_path)}" && {exec_part}'
         commands.append(cmd)
 
     if not commands:
