@@ -1258,15 +1258,9 @@ def install_prerequisites(game_os=None):
     QApplication.processEvents()
 
     if isWindows:
-        success = run_prereqs_elevated(prereqs, game_base_folder)
+        success = run_prereqs_elevated(prereqs, game_base_folder, marker_path)
 
         if success:
-            try:
-                with open(marker_path, "w") as f:
-                    f.write("Prerequisites installed.\n")
-            except:
-                pass
-
             percentage_label.setText(f"Finished prerequisites for {display_name} ({installed_os}).")
             QMessageBox.information(window, "Done", f"Prerequisites installed.")
         else:
@@ -1302,20 +1296,22 @@ def install_prerequisites(game_os=None):
 
             time.sleep(1)
             QApplication.processEvents()
-
-        try:
-            with open(marker_path, "w") as f: f.write("Prerequisites installed.\n")
-        except: pass
     
     percentage_label.setText(f"Finished prerequisites for {display_name} ({installed_os}).")
     QMessageBox.information(window, "Done", f"Prerequisites installed.")
 
-def run_prereqs_elevated(prereq_entries, game_base_folder):
-    completion_flag = os.path.join(game_base_folder, "prereqs_done.flag")
+import tempfile
+import ctypes
+import os
+import time
 
-    # Remove old flag if it exists
-    if os.path.exists(completion_flag):
-        os.remove(completion_flag)
+def run_prereqs_elevated(prereq_entries, game_base_folder, marker_path):
+    # Remove old marker so we don't instantly succeed
+    if os.path.exists(marker_path):
+        try:
+            os.remove(marker_path)
+        except:
+            pass
 
     commands = []
 
@@ -1338,28 +1334,28 @@ def run_prereqs_elevated(prereq_entries, game_base_folder):
     script_content = "@echo off\n"
     script_content += "echo Installing prerequisites...\n"
     script_content += "\n".join(commands)
-    script_content += f'\necho done > "{completion_flag}"\n'
+    script_content += f'\necho Installed on %DATE% %TIME% > "{marker_path}"\n'
     script_content += "exit\n"
 
     with tempfile.NamedTemporaryFile(delete=False, suffix=".bat", mode="w", encoding="utf-8") as f:
         f.write(script_content)
         temp_bat = f.name
 
-    # Run elevated
+    # Run elevated (ONE UAC prompt)
     ctypes.windll.shell32.ShellExecuteW(
         None,
         "runas",
         "cmd.exe",
         f'/c "{temp_bat}"',
         None,
-        1  # show window (important for debugging)
+        1
     )
 
-    # 🔴 WAIT for completion
-    timeout = 600  # 10 minutes max
+    # Wait for marker file
+    timeout = 600  # 10 minutes
     start = time.time()
 
-    while not os.path.exists(completion_flag):
+    while not os.path.exists(marker_path):
         if time.time() - start > timeout:
             return False
         time.sleep(0.5)
