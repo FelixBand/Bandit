@@ -28,7 +28,7 @@ isLinux = platform.system() == 'Linux'
 
 OS = platform.system()
 
-version = "1.6.3"
+version = "1.6.2"
 
 # --- PROTON CONFIGURATION (Linux Only) ---
 PROTON_GE_VERSION = "GE-Proton10-34"
