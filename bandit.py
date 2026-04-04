@@ -12,6 +12,9 @@ import platform
 import shutil
 import ntpath
 import webbrowser
+import tempfile
+import ctypes
+import time
 from html.parser import HTMLParser
 from urllib.parse import urljoin, urlparse, unquote, quote
 from plyer import notification
@@ -25,7 +28,7 @@ isLinux = platform.system() == 'Linux'
 
 OS = platform.system()
 
-version = "1.6.2"
+version = "1.6.3"
 
 # --- PROTON CONFIGURATION (Linux Only) ---
 PROTON_GE_VERSION = "GE-Proton10-34"
@@ -844,7 +847,7 @@ def download_and_play_game():
                 env = os.environ.copy()
                 env["STEAM_COMPAT_DATA_PATH"] = PROTON_PFX
                 env["STEAM_COMPAT_CLIENT_INSTALL_PATH"] = PROTON_PFX
-                env["WINEDLLOVERRIDES"] = "dinput8,d3d9,version,steamoverlay64,winmm,winhttp=n,b" # This is for games that inject DLLs to load mods
+                env["WINEDLLOVERRIDES"] = "dinput8,d3d9,version,winmm,winhttp=n,b" # This is for games that inject DLLs to load mods
                 
                 # Command: ./proton run "game.exe"
                 cmd = [PROTON_EXECUTABLE, "run", game_exec_full_path]
@@ -1254,41 +1257,114 @@ def install_prerequisites(game_os=None):
     percentage_label.setText(f"Installing prerequisites for {display_name} ({installed_os})...")
     QApplication.processEvents()
 
-    for prereq in prereqs:
-        rel_path = prereq.get("path", "")
-        cmd_args = prereq.get("command", "")
-        if not rel_path: continue
+    if isWindows:
+        success = run_prereqs_elevated(prereqs, game_base_folder)
 
-        full_path = os.path.join(game_base_folder, rel_path.lstrip("/").lstrip("\\"))
-        installer_dir = os.path.dirname(full_path)
+        if success:
+            try:
+                with open(marker_path, "w") as f:
+                    f.write("Prerequisites installed.\n")
+            except:
+                pass
+
+            percentage_label.setText(f"Finished prerequisites for {display_name} ({installed_os}).")
+            QMessageBox.information(window, "Done", f"Prerequisites installed.")
+        else:
+            QMessageBox.critical(window, "Error", "Prerequisite installation failed or timed out.")
+
+        return
+    else:
+        for prereq in prereqs:
+            rel_path = prereq.get("path", "")
+            cmd_args = prereq.get("command", "")
+            if not rel_path: continue
+
+            full_path = os.path.join(game_base_folder, rel_path.lstrip("/").lstrip("\\"))
+            installer_dir = os.path.dirname(full_path)
+
+            try:
+                # Check if we need to run via Proton (Windows game on Linux)
+                if isLinux and installed_os == "Windows":
+                    print(f"Running Windows prerequisite via Proton: {full_path}")
+                    env = os.environ.copy()
+                    env["STEAM_COMPAT_DATA_PATH"] = PROTON_PFX
+                    env["STEAM_COMPAT_CLIENT_INSTALL_PATH"] = PROTON_PFX
+                    # Proton "run" command for the installer
+                    cmd = [PROTON_EXECUTABLE, "run", full_path] + cmd_args.split()
+                    subprocess.run(cmd, env=env, check=True)
+                else:
+                    # Native installation
+                    subprocess.run([full_path] + cmd_args.split(), cwd=installer_dir, shell=True, check=True)
+                    
+                print(f"Installed: {full_path}")
+            except Exception as e:
+                print(f"Failed prereq {full_path}: {e}")
+
+            time.sleep(1)
+            QApplication.processEvents()
 
         try:
-            # Check if we need to run via Proton (Windows game on Linux)
-            if isLinux and installed_os == "Windows":
-                print(f"Running Windows prerequisite via Proton: {full_path}")
-                env = os.environ.copy()
-                env["STEAM_COMPAT_DATA_PATH"] = PROTON_PFX
-                env["STEAM_COMPAT_CLIENT_INSTALL_PATH"] = PROTON_PFX
-                # Proton "run" command for the installer
-                cmd = [PROTON_EXECUTABLE, "run", full_path] + cmd_args.split()
-                subprocess.run(cmd, env=env, check=True)
-            else:
-                # Native installation
-                subprocess.run([full_path] + cmd_args.split(), cwd=installer_dir, shell=True, check=True)
-                
-            print(f"Installed: {full_path}")
-        except Exception as e:
-            print(f"Failed prereq {full_path}: {e}")
-
-        time.sleep(1)
-        QApplication.processEvents()
-
-    try:
-        with open(marker_path, "w") as f: f.write("Prerequisites installed.\n")
-    except: pass
+            with open(marker_path, "w") as f: f.write("Prerequisites installed.\n")
+        except: pass
     
     percentage_label.setText(f"Finished prerequisites for {display_name} ({installed_os}).")
     QMessageBox.information(window, "Done", f"Prerequisites installed.")
+
+def run_prereqs_elevated(prereq_entries, game_base_folder):
+    completion_flag = os.path.join(game_base_folder, "prereqs_done.flag")
+
+    # Remove old flag if it exists
+    if os.path.exists(completion_flag):
+        os.remove(completion_flag)
+
+    commands = []
+
+    for prereq in prereq_entries:
+        rel_path = prereq.get("path", "")
+        cmd_args = prereq.get("command", "")
+
+        if not rel_path:
+            continue
+
+        full_path = os.path.join(game_base_folder, rel_path.lstrip("/").lstrip("\\"))
+
+        cmd = f'cd /d "{os.path.dirname(full_path)}" && "{full_path}" {cmd_args}'
+        commands.append(cmd)
+
+    if not commands:
+        return False
+
+    # Build script
+    script_content = "@echo off\n"
+    script_content += "echo Installing prerequisites...\n"
+    script_content += "\n".join(commands)
+    script_content += f'\necho done > "{completion_flag}"\n'
+    script_content += "exit\n"
+
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".bat", mode="w", encoding="utf-8") as f:
+        f.write(script_content)
+        temp_bat = f.name
+
+    # Run elevated
+    ctypes.windll.shell32.ShellExecuteW(
+        None,
+        "runas",
+        "cmd.exe",
+        f'/c "{temp_bat}"',
+        None,
+        1  # show window (important for debugging)
+    )
+
+    # 🔴 WAIT for completion
+    timeout = 600  # 10 minutes max
+    start = time.time()
+
+    while not os.path.exists(completion_flag):
+        if time.time() - start > timeout:
+            return False
+        time.sleep(0.5)
+
+    return True
 
 def browse_file_location():
     selected_game_index = game_list_widget.currentRow()
