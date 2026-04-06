@@ -121,12 +121,15 @@ for line in rawlist:
     except IndexError:
         gameMPstatus.append("Unknown")
 
-for game_name in gameNames:
-    if gameIDs[gameNames.index(game_name)] not in installedGames:
-        gameList.insert(tk.END, game_name)
-        gameList.itemconfig(tk.END, fg="gray60") # gray out uninstalled games
-    else:
-        gameList.insert(tk.END, game_name)
+def make_game_list():
+    for game_name in gameNames:
+        if gameIDs[gameNames.index(game_name)] not in installedGames:
+            gameList.insert(tk.END, game_name)
+            gameList.itemconfig(tk.END, fg="gray60") # gray out uninstalled games
+        else:
+            gameList.insert(tk.END, game_name)
+
+make_game_list()
 
 # Download/play button
 ipButton = tk.Button(app, text="Install/Play", font=(None, 14))
@@ -147,8 +150,46 @@ def on_game_select(event):
 gameList.bind("<<ListboxSelect>>", on_game_select)
 
 def download_game(game_id):
-    # download the game using the download link from the list.txt file. The link is in the format "https://thuis.felixband.nl/bandit/{OS}/{game_id}.zip"
-    download_url = f"https://thuis.felixband.nl/bandit/{OS}/{game_id}.tar.gz"
+    url = f"https://thuis.felixband.nl/bandit/{OS}/{game_id}.tar.gz"
+    install_path = "/usr/local/share/BanditGameLauncher" if OS != "Windows" else "C:/ProgramData/BanditGameLauncher"
+
+    try:
+        with requests.get(url, stream=True, timeout=10) as response:
+            response.raise_for_status()
+
+            total_size = int(response.headers.get("Content-Length", 0))
+            downloaded = 0
+
+            class ProgressFile:
+                def __init__(self, raw):
+                    self.raw = raw
+
+                def read(self, size=-1):
+                    nonlocal downloaded
+                    data = self.raw.read(size)
+                    if data:
+                        downloaded += len(data)
+                        if total_size:
+                            percent = (downloaded / total_size) * 100
+                            print(f"\rDownloading {game_id}: {percent:.2f}%", end="")
+                        else:
+                            print(f"\rDownloading {game_id}: {downloaded} bytes", end="")
+                    return data
+
+                def readable(self):
+                    return True
+
+            wrapped = ProgressFile(response.raw)
+
+            with tarfile.open(fileobj=wrapped, mode="r|gz") as tar:
+                tar.extractall(path=install_path)
+
+        print(f"\n{game_id} installed successfully.")
+        return True
+
+    except Exception as e:
+        print(f"\nFailed to install {game_id}: {e}")
+        return False
 
 
 def install_or_play():
@@ -171,7 +212,23 @@ def install_or_play():
     else:
         # install the game
         print(f"Installing {selected_game}")
-        download_game(gameIDs[selected_game])
+        # download_game does its thing, wait for return True
+        if download_game(gameIDs[selected_game]):
+            # add to installed_games.json
+            with open(f"{bandit_appdata}/installed_games.json", "r") as f:
+                installed_games = json.load(f)
+            install_path = "/usr/local/share/BanditGameLauncher" if OS != "Windows" else "C:/ProgramData/BanditGameLauncher"
+            installed_games[OS][gameIDs[selected_game]] = f"{install_path}"
+            with open(f"{bandit_appdata}/installed_games.json", "w") as f:
+                json.dump(installed_games, f, indent=4)
+
+            # refresh the game list
+            gameList.delete(0, tk.END)
+            refresh_installed_games()
+            make_game_list()
+        else:
+            tk.messagebox.showerror("Error", "Failed to install the game. Please try again.")
+
 
 ipButton.bind("<Button-1>", lambda event: install_or_play()) # <Button-1> = lmb, <Button-2> = mmb, <Button-3> = rmb
 
