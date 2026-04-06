@@ -38,6 +38,24 @@ elif platform.system() == "Linux":
     if not os.path.exists(bandit_path):
         os.makedirs(bandit_path)
 
+# Game install locations.
+# I want system wide installs, so every user on a PC can use the same games.
+# Windows: C:\ProgramData\BanditGameLauncher\
+# MacOS: /Library/Application Support/BanditGameLauncher/
+# Linux: /usr/local/share/BanditGameLauncher/
+if platform.system() == "Windows":
+    game_install_path = "C:/ProgramData/BanditGameLauncher"
+    if not os.path.exists(game_install_path):
+        os.makedirs(game_install_path)
+elif platform.system() == "Darwin": # MacOS
+    game_install_path = "/Library/Application Support/BanditGameLauncher"
+    if not os.path.exists(game_install_path):
+        os.makedirs(game_install_path)
+elif platform.system() == "Linux":
+    game_install_path = "/usr/local/share/BanditGameLauncher"
+    if not os.path.exists(game_install_path):
+        os.makedirs(game_install_path)
+
 if debug:
     OS = "Windows"
 else:
@@ -53,7 +71,7 @@ try:
     open(f"{bandit_path}/installed_games.json", "r")
 except FileNotFoundError:
     with open(f"{bandit_path}/installed_games.json", "w") as f:
-        f.write("{}") # empty json object
+        f.write('{"Windows": {}, "Linux": {}, "Darwin": {}}') # empty json object
 
 gameList = tk.Listbox(app, font=(None, 14)) # Don't care about font, so "None" and 14 font size
 gameList.pack(fill=tk.BOTH, expand=1, padx=10, pady=10) # expand means fill the whole window instead of just using the space it needs
@@ -85,23 +103,47 @@ for line in rawlist:
 for game_name in gameNames:
     gameList.insert(tk.END, game_name)
 
+# installed_games.json format:
+# {
+#     "Windows/Linux/Darwin": {
+#         "game_id": "/path/to/game/parent/directory"
+#     }
+# }
+installedGames = []
+
+def refresh_installed_games():
+    with open(f"{bandit_path}/installed_games.json", "r") as f:
+        installed_games = json.load(f)
+        for game_id in installed_games[OS]:
+            installedGames.append(game_id)
+
+refresh_installed_games()
 
 # Download/play button
 ipButton = tk.Button(app, text="Install/Play", font=(None, 14))
 ipButton.pack(pady=10)
 ipButton.config(state=tk.DISABLED)
 
-def install_or_play():
-    print("Clicked!")
-
-ipButton.bind("<Button-1>", lambda event: install_or_play()) # <Button-1> = lmb, <Button-2> = mmb, <Button-3> = rmb
-
+selected_game = None
 def on_game_select(event):
-    selected_index = gameList.curselection()[0] # [0] is for getting the first and only selected item, since curselection() returns multiple indices of something??
+    selected_game = gameList.curselection()[0] # [0] is for getting the first and only selected item, since curselection() returns multiple indices of something??
     ipButton.config(state=tk.NORMAL)
-    print(f"{selected_index}: name: {gameNames[selected_index]} id: {gameIDs[selected_index]} size: {gameSizes[selected_index]} multiplayer: {gameMPstatus[selected_index]}") # debug info
+    if gameIDs[selected_game] in installedGames:
+        ipButton.config(text="Play")
+    else:
+        ipButton.config(text="Install")
+    print(f"{selected_game}: name: {gameNames[selected_game]} id: {gameIDs[selected_game]} size: {gameSizes[selected_game]} multiplayer: {gameMPstatus[selected_game]}") # debug info
 
 gameList.bind("<<ListboxSelect>>", on_game_select)
 
+def install_or_play():
+    if gameIDs[selected_game] in installedGames:
+        # play the game
+        print(f'Launching {selected_game}!')
+    else:
+        # install the game
+        print(f"Installing {selected_game}")
+
+ipButton.bind("<Button-1>", lambda event: install_or_play()) # <Button-1> = lmb, <Button-2> = mmb, <Button-3> = rmb
 
 app.mainloop() # Up and away!
