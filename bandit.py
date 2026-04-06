@@ -26,35 +26,38 @@ app.geometry("600x800+50+50") # 50 padding
 
 # App data locations
 if platform.system() == "Windows":
-    bandit_path = f"{os.getenv("APPDATA")}/BanditGameLauncher"
-    if not os.path.exists(bandit_path):
-        os.makedirs(bandit_path)
+    bandit_appdata = f"{os.getenv("APPDATA")}/BanditGameLauncher"
+    if not os.path.exists(bandit_appdata):
+        os.makedirs(bandit_appdata)
 elif platform.system() == "Darwin": # MacOS
-    bandit_path = f"{os.path.expanduser("~")}/Library/Application Support/BanditGameLauncher"
-    if not os.path.exists(bandit_path):
-        os.makedirs(bandit_path)
+    bandit_appdata = f"{os.path.expanduser("~")}/Library/Application Support/BanditGameLauncher"
+    if not os.path.exists(bandit_appdata):
+        os.makedirs(bandit_appdata)
 elif platform.system() == "Linux":
-    bandit_path = f"{os.path.expanduser("~")}/.config/BanditGameLauncher"
-    if not os.path.exists(bandit_path):
-        os.makedirs(bandit_path)
+    bandit_appdata = f"{os.path.expanduser("~")}/.config/BanditGameLauncher"
+    if not os.path.exists(bandit_appdata):
+        os.makedirs(bandit_appdata)
 
 # Game install locations.
 # I want system wide installs, so every user on a PC can use the same games.
-# Windows: C:\ProgramData\BanditGameLauncher\
-# MacOS: /Library/Application Support/BanditGameLauncher/
-# Linux: /usr/local/share/BanditGameLauncher/
 if platform.system() == "Windows":
-    game_install_path = "C:/ProgramData/BanditGameLauncher"
-    if not os.path.exists(game_install_path):
-        os.makedirs(game_install_path)
-elif platform.system() == "Darwin": # MacOS
-    game_install_path = "/Library/Application Support/BanditGameLauncher"
-    if not os.path.exists(game_install_path):
-        os.makedirs(game_install_path)
-elif platform.system() == "Linux":
-    game_install_path = "/usr/local/share/BanditGameLauncher"
-    if not os.path.exists(game_install_path):
-        os.makedirs(game_install_path)
+    if not os.path.exists("C:/ProgramData/BanditGameLauncher"):
+        # UAC prompt, create folder and grant permissions
+        subprocess.run(["powershell", "-Command", "Start-Process", "cmd", "-Verb", "RunAs", "-ArgumentList", "'/c', 'mkdir C:/ProgramData/BanditGameLauncher && icacls C:/ProgramData/BanditGameLauncher /grant *S-1-1-0:(OI)(CI)F'"])
+        if not os.path.exists("C:/ProgramData/BanditGameLauncher"):
+            print("Failed to create system-wide folder. Please run this program as administrator.")
+            exit(1)
+else:
+    # same for osx and linux
+    print('check if exists')
+    if not os.path.exists("/usr/local/share/BanditGameLauncher"):
+        print('create')
+        # visual sudo prompt using pkexec. combine two commands so the user doesn't have to enter their password twice
+        subprocess.run(["pkexec", "sh", "-c", "mkdir /usr/local/share/BanditGameLauncher && chmod 777 /usr/local/share/BanditGameLauncher"])
+        # if fails, exit
+        if not os.path.exists("/usr/local/share/BanditGameLauncher"):
+            print("Failed to create system-wide folder. Please run this program as root or with sudo.")
+            exit(1)
 
 if debug:
     OS = "Windows"
@@ -62,16 +65,32 @@ else:
     OS = platform.system()
 
 # Download necessary files!    
-download_file(f"https://thuis.felixband.nl/bandit/{OS}/list.txt", bandit_path)
-download_file(f"https://thuis.felixband.nl/bandit/{OS}/executable_paths.json", bandit_path)
-download_file(f"https://thuis.felixband.nl/bandit/{OS}/prereq_paths.json", bandit_path)
+download_file(f"https://thuis.felixband.nl/bandit/{OS}/list.txt", bandit_appdata)
+download_file(f"https://thuis.felixband.nl/bandit/{OS}/executable_paths.json", bandit_appdata)
+download_file(f"https://thuis.felixband.nl/bandit/{OS}/prereq_paths.json", bandit_appdata)
 
 # if it doesn't exist, make local file to store installed games in
 try:
-    open(f"{bandit_path}/installed_games.json", "r")
+    open(f"{bandit_appdata}/installed_games.json", "r")
 except FileNotFoundError:
-    with open(f"{bandit_path}/installed_games.json", "w") as f:
+    with open(f"{bandit_appdata}/installed_games.json", "w") as f:
         f.write('{"Windows": {}, "Linux": {}, "Darwin": {}}') # empty json object
+
+# installed_games.json format:
+# {
+#     "Windows/Linux/Darwin": {
+#         "game_id": "/path/to/game/parent/directory"
+#     }
+# }
+installedGames = []
+
+def refresh_installed_games():
+    with open(f"{bandit_appdata}/installed_games.json", "r") as f:
+        installed_games = json.load(f)
+        for game_id in installed_games[OS]:
+            installedGames.append(game_id)
+
+refresh_installed_games()
 
 gameList = tk.Listbox(app, font=(None, 14)) # Don't care about font, so "None" and 14 font size
 gameList.pack(fill=tk.BOTH, expand=1, padx=10, pady=10) # expand means fill the whole window instead of just using the space it needs
@@ -82,7 +101,7 @@ gameIDs = []
 gameSizes = []
 gameMPstatus = []
 
-for line in open(f"{bandit_path}/list.txt", "r").readlines():
+for line in open(f"{bandit_appdata}/list.txt", "r").readlines():
     rawlist.append(line.strip()) # strip removes newline (\n) character, which you always want, duh??
     # here I turn the raw .txt file into an array.
 rawlist.sort() # Sort alphabetically
@@ -102,22 +121,6 @@ for line in rawlist:
 
 for game_name in gameNames:
     gameList.insert(tk.END, game_name)
-
-# installed_games.json format:
-# {
-#     "Windows/Linux/Darwin": {
-#         "game_id": "/path/to/game/parent/directory"
-#     }
-# }
-installedGames = []
-
-def refresh_installed_games():
-    with open(f"{bandit_path}/installed_games.json", "r") as f:
-        installed_games = json.load(f)
-        for game_id in installed_games[OS]:
-            installedGames.append(game_id)
-
-refresh_installed_games()
 
 # Download/play button
 ipButton = tk.Button(app, text="Install/Play", font=(None, 14))
