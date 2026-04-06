@@ -7,3 +7,6 @@ Thumbs.db
 sign
 bandit.py
 saved_paths.json
+list.txt
+executable_paths.json
+prereq_paths.json
