@@ -1,69 +1,19 @@
-import sys
+import tkinter as tk
 
-from PyQt6.QtCore import Qt
-from PyQt6.QtWidgets import (
-    QApplication,
-    QCheckBox,
-    QComboBox,
-    QDateEdit,
-    QDateTimeEdit,
-    QDial,
-    QDoubleSpinBox,
-    QFontComboBox,
-    QLabel,
-    QLCDNumber,
-    QLineEdit,
-    QMainWindow,
-    QProgressBar,
-    QPushButton,
-    QRadioButton,
-    QSlider,
-    QSpinBox,
-    QTimeEdit,
-    QVBoxLayout,
-    QWidget,
-)
+root = tk.Tk()
 
 version = "2.0.0"
 
-# Subclass QMainWindow to customize your application's main window
-class MainWindow(QMainWindow):
-    def __init__(self):
-        super().__init__()
+# Setting some window properties
+root.title(f"Bandit - Game Launcher v{version}")
+#root.configure(background="yellow") # Maybe this can be transparent? Or dark mode + light mode toggle
+root.minsize(200, 200)
+#root.maxsize(500, 500) # No need for a max size
+root.geometry("600x800+50+50")
 
-        self.setWindowTitle(f"Bandit - Game Launcher v{version}")
 
-        layout = QVBoxLayout()
-        widgets = [
-            QCheckBox,
-            QComboBox,
-            QDateEdit,
-            QDateTimeEdit,
-            QDial,
-            QDoubleSpinBox,
-            QFontComboBox,
-            QLCDNumber,
-            QLabel,
-            QLineEdit,
-            QProgressBar,
-            QPushButton,
-            QRadioButton,
-            QSlider,
-            QSpinBox,
-            QTimeEdit,
-        ]
 
-        for w in widgets:
-            layout.addWidget(w())
 
-        widget = QWidget()
-        widget.setLayout(layout)
 
-        # Set the central widget of the Window. Widget will expand
-        # to take up all the space in the window by default.
-        self.setCentralWidget(widget)
 
-app = QApplication(sys.argv)
-window = MainWindow()
-window.show()
-app.exec()
+root.mainloop() # Up and away!
