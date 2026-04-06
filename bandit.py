@@ -5,6 +5,7 @@ import os
 import json
 import requests
 import subprocess
+import tarfile
 
 app = ctk.CTk()
 
@@ -23,7 +24,7 @@ def download_file(url, location=".", timeout = 10):
 # window properties
 app.title(f"Bandit - Game Launcher v{version}")
 app.minsize(300, 400)
-app.geometry("600x800+50+50") # 50 padding
+app.geometry("650x700+50+50") # 50 padding
 
 # App data locations
 if platform.system() == "Windows":
@@ -121,7 +122,11 @@ for line in rawlist:
         gameMPstatus.append("Unknown")
 
 for game_name in gameNames:
-    gameList.insert(tk.END, game_name)
+    if gameIDs[gameNames.index(game_name)] not in installedGames:
+        gameList.insert(tk.END, game_name)
+        gameList.itemconfig(tk.END, fg="gray60") # gray out uninstalled games
+    else:
+        gameList.insert(tk.END, game_name)
 
 # Download/play button
 ipButton = tk.Button(app, text="Install/Play", font=(None, 14))
@@ -141,13 +146,32 @@ def on_game_select(event):
 
 gameList.bind("<<ListboxSelect>>", on_game_select)
 
+def download_game(game_id):
+    # download the game using the download link from the list.txt file. The link is in the format "https://thuis.felixband.nl/bandit/{OS}/{game_id}.zip"
+    download_url = f"https://thuis.felixband.nl/bandit/{OS}/{game_id}.tar.gz"
+
+
 def install_or_play():
     if gameIDs[selected_game] in installedGames:
         # play the game
         print(f'Launching {selected_game}!')
+        # installation path from installed_games.json + executable path from executable_paths.json
+        with open(f"{bandit_appdata}/installed_games.json", "r") as f:
+            installed_games = json.load(f)
+            game_path = installed_games[OS][gameIDs[selected_game]]
+        with open(f"{bandit_appdata}/executable_paths.json", "r") as f:
+            executable_paths = json.load(f)
+            game_path = f"{game_path}/{executable_paths[gameIDs[selected_game]]}"
+
+            try:
+                # RUN GAME with subprocess. Important to set the working directory to the game's directory. We need to do this by concatenating the first directory of the executable path to the install path.
+                subprocess.Popen(game_path, cwd=os.path.dirname(game_path))
+            except Exception as e:
+                tk.messagebox.showerror("Error", f"Failed to launch the game. Error: {e}")
     else:
         # install the game
         print(f"Installing {selected_game}")
+        download_game(gameIDs[selected_game])
 
 ipButton.bind("<Button-1>", lambda event: install_or_play()) # <Button-1> = lmb, <Button-2> = mmb, <Button-3> = rmb
 
