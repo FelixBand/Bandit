@@ -6,6 +6,8 @@ import json
 import requests
 import subprocess
 import tarfile
+import threading
+import shutil
 
 app = ctk.CTk()
 
@@ -43,21 +45,27 @@ elif platform.system() == "Linux":
 # Game install locations.
 # I want system wide installs, so every user on a PC can use the same games.
 if platform.system() == "Windows":
-    if not os.path.exists("C:/ProgramData/BanditGameLauncher"):
-        # UAC prompt, create folder and grant permissions
-        subprocess.run(["powershell", "-Command", "Start-Process", "cmd", "-Verb", "RunAs", "-ArgumentList", "'/c', 'mkdir C:/ProgramData/BanditGameLauncher && icacls C:/ProgramData/BanditGameLauncher /grant *S-1-1-0:(OI)(CI)F'"])
-        if not os.path.exists("C:/ProgramData/BanditGameLauncher"):
+    bandit_install_location = os.path.join(os.getenv("PROGRAMDATA"), "BanditGameLauncher")
+    if not os.path.exists(bandit_install_location):
+        print("Creating system-wide folder...")
+        try:
+            os.makedirs(os.path.join(bandit_install_location, "Games"))
+        except Exception as e:
+            print(f"Failed to create system-wide folder: {e}")
+            exit(1)
+        if not os.path.exists(bandit_install_location):
             print("Failed to create system-wide folder. Please run this program as administrator.")
             exit(1)
 else:
+    bandit_install_location = "/usr/local/share/BanditGameLauncher"
     # same for osx and linux
     print('check if exists')
-    if not os.path.exists("/usr/local/share/BanditGameLauncher"):
+    if not os.path.exists(bandit_install_location):
         print('create')
         # visual sudo prompt using pkexec. combine two commands so the user doesn't have to enter their password twice
-        subprocess.run(["pkexec", "sh", "-c", "mkdir /usr/local/share/BanditGameLauncher && chmod 777 /usr/local/share/BanditGameLauncher"])
+        subprocess.run(["pkexec", "sh", "-c", f"mkdir {os.path.join(bandit_install_location, 'Games')} && chmod 777 {bandit_install_location}"])
         # if fails, exit
-        if not os.path.exists("/usr/local/share/BanditGameLauncher"):
+        if not os.path.exists(bandit_install_location):
             print("Failed to create system-wide folder. Please run this program as root or with sudo.")
             exit(1)
 
@@ -87,6 +95,8 @@ except FileNotFoundError:
 installedGames = []
 
 def refresh_installed_games():
+    global installedGames
+    installedGames = [] # Reset the list so we don't append to old data
     with open(f"{bandit_appdata}/installed_games.json", "r") as f:
         installed_games = json.load(f)
         for game_id in installed_games[OS]:
@@ -94,8 +104,18 @@ def refresh_installed_games():
 
 refresh_installed_games()
 
-gameList = tk.Listbox(app, font=(None, 14)) # Don't care about font, so "None" and 14 font size
-gameList.pack(fill=tk.BOTH, expand=1, padx=10, pady=10) # expand means fill the whole window instead of just using the space it needs
+gameList = tk.Listbox(
+    app,
+    font=(None, 14),
+    bg="#1b1b1b",       # dark background
+    fg="white",         # text color
+    selectbackground="#444",  # selected item background
+    selectforeground="white",
+    highlightthickness=0,     # removes ugly border
+    bd=0                     # removes border
+)
+
+gameList.pack(fill=tk.BOTH, expand=1, padx=10, pady=10)
 
 rawlist = []
 gameNames = []
@@ -125,33 +145,39 @@ def make_game_list():
     for game_name in gameNames:
         if gameIDs[gameNames.index(game_name)] not in installedGames:
             gameList.insert(tk.END, game_name)
-            gameList.itemconfig(tk.END, fg="gray60") # gray out uninstalled games
+            gameList.itemconfig(tk.END, fg="gray50") # gray out uninstalled games
         else:
             gameList.insert(tk.END, game_name)
 
 make_game_list()
 
-# Download/play button
-ipButton = tk.Button(app, text="Install/Play", font=(None, 14))
-ipButton.pack(pady=10)
-ipButton.config(state=tk.DISABLED)
+currently_downloading = False
+currently_downloading_game = None
 
 selected_game = None
 def on_game_select(event):
     global selected_game
     selected_game = gameList.curselection()[0] # [0] is for getting the first and only selected item, since curselection() returns multiple indices of something??
-    ipButton.config(state=tk.NORMAL)
     if gameIDs[selected_game] in installedGames:
         ipButton.config(text="Play")
+        ipButton.config(state=tk.NORMAL)
+        uninstallButton.config(state=tk.NORMAL)
     else:
         ipButton.config(text="Install")
+        uninstallButton.config(state=tk.DISABLED)
+        if not currently_downloading:
+            ipButton.config(state=tk.NORMAL)
+        else:
+            ipButton.config(state=tk.DISABLED)
     print(f"{selected_game}: name: {gameNames[selected_game]} id: {gameIDs[selected_game]} size: {gameSizes[selected_game]} multiplayer: {gameMPstatus[selected_game]}") # debug info
 
 gameList.bind("<<ListboxSelect>>", on_game_select)
 
 def download_game(game_id):
+    global currently_downloading
+    currently_downloading = True
     url = f"https://thuis.felixband.nl/bandit/{OS}/{game_id}.tar.gz"
-    install_path = "/usr/local/share/BanditGameLauncher" if OS != "Windows" else "C:/ProgramData/BanditGameLauncher"
+    bandit_install_location
 
     try:
         with requests.get(url, stream=True, timeout=10) as response:
@@ -172,6 +198,7 @@ def download_game(game_id):
                         if total_size:
                             percent = (downloaded / total_size) * 100
                             print(f"\rDownloading {game_id}: {percent:.2f}%", end="")
+                            progress.set(percent)
                         else:
                             print(f"\rDownloading {game_id}: {downloaded} bytes", end="")
                     return data
@@ -182,14 +209,17 @@ def download_game(game_id):
             wrapped = ProgressFile(response.raw)
 
             with tarfile.open(fileobj=wrapped, mode="r|gz") as tar:
-                tar.extractall(path=install_path)
+                tar.extractall(path=os.path.join(bandit_install_location, "Games"))
 
         print(f"\n{game_id} installed successfully.")
+        progress.set(0)
         return True
 
     except Exception as e:
         print(f"\nFailed to install {game_id}: {e}")
+        progress.set(0)
         return False
+        
 
 
 def install_or_play():
@@ -211,25 +241,93 @@ def install_or_play():
                 tk.messagebox.showerror("Error", f"Failed to launch the game. Error: {e}")
     else:
         # install the game
+        currently_downloading_game = selected_game
         print(f"Installing {selected_game}")
-        # download_game does its thing, wait for return True
-        if download_game(gameIDs[selected_game]):
-            # add to installed_games.json
-            with open(f"{bandit_appdata}/installed_games.json", "r") as f:
-                installed_games = json.load(f)
-            install_path = "/usr/local/share/BanditGameLauncher" if OS != "Windows" else "C:/ProgramData/BanditGameLauncher"
-            installed_games[OS][gameIDs[selected_game]] = f"{install_path}"
-            with open(f"{bandit_appdata}/installed_games.json", "w") as f:
-                json.dump(installed_games, f, indent=4)
+        ipButton.config(state=tk.DISABLED)
 
-            # refresh the game list
-            gameList.delete(0, tk.END)
-            refresh_installed_games()
-            make_game_list()
-        else:
-            tk.messagebox.showerror("Error", "Failed to install the game. Please try again.")
+        def task():
+            success = download_game(gameIDs[selected_game])
+
+            def after():
+                ipButton.config(state=tk.NORMAL)
+
+                if success:
+                    # update installed_games.json
+                    with open(f"{bandit_appdata}/installed_games.json", "r") as f:
+                        installed_games = json.load(f)
+
+                    installed_games[OS][gameIDs[currently_downloading_game]] = os.path.join(bandit_install_location, "Games")
+
+                    with open(f"{bandit_appdata}/installed_games.json", "w") as f:
+                        json.dump(installed_games, f, indent=4)
+
+                    # refresh UI
+                    gameList.delete(0, tk.END)
+                    refresh_installed_games()
+                    make_game_list()
+                    currently_downloading = False
+                else:
+                    tk.messagebox.showerror("Error", "Failed to install the game.")
+                    currently_downloading = False
+
+            # safely update UI from main thread
+            app.after(0, after)
+
+        threading.Thread(target=task, daemon=True).start()
+
+def get_first_folder_in_executable_path(game_id):
+    with open(f"{bandit_appdata}/executable_paths.json", "r") as f:
+        executable_paths = json.load(f)
+        exec_path = executable_paths[game_id]
+        first_folder = exec_path.split("/")[0] # get the first folder in the path
+        return first_folder
 
 
-ipButton.bind("<Button-1>", lambda event: install_or_play()) # <Button-1> = lmb, <Button-2> = mmb, <Button-3> = rmb
+def uninstall_game():
+    print('gonna nuke')
+    with open(f"{bandit_appdata}/installed_games.json", "r") as f:
+        installed_games = json.load(f)
+    game_id = gameIDs[selected_game]
+    full_game_path = os.path.join(installed_games[OS][game_id], get_first_folder_in_executable_path(game_id))
+    # Ask for confirmation
+    if not tk.messagebox.askyesno("Confirm Uninstall", f"Are you sure you want to uninstall {selected_game}? This will delete: {full_game_path}"):
+        return
+    try:
+        shutil.rmtree(full_game_path) # remove the game's folder and all its contents
+        del installed_games[OS][game_id] # remove from installed_games.json
+        with open(f"{bandit_appdata}/installed_games.json", "w") as f:
+            json.dump(installed_games, f, indent=4)
+        # refresh UI
+        gameList.delete(0, tk.END)
+        refresh_installed_games()
+        make_game_list()
+        print(f'nuke successful. Deleted {full_game_path}')
+    except Exception as e:
+        tk.messagebox.showerror("Error", f"Failed to uninstall the game. Error: {e}")
+
+# Download/play button
+ipButton = tk.Button(
+    app,
+    text="Install/Play",
+    font=(None, 14),
+    command=install_or_play
+)
+ipButton.pack(fill="x",pady=10, padx=20)
+ipButton.config(state=tk.DISABLED)
+
+uninstallButton = tk.Button(
+    app,
+    text="Uninstall",
+    font=(None, 14),
+    command=uninstall_game
+)
+uninstallButton.pack(fill="x",pady=10, padx=20)
+uninstallButton.config(state=tk.DISABLED)
+
+# Progress bar. span the progress bar across the whole window with some padding
+progress = tk.DoubleVar()
+progressBar = tk.ttk.Progressbar(app, variable=progress, maximum=100)
+progressBar.pack(fill="x", expand=False, padx=20, pady=10)
+
 
 app.mainloop() # Up and away!
