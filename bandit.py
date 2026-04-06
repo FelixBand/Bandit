@@ -24,12 +24,14 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+version = "2.0.0"
+
 # Subclass QMainWindow to customize your application's main window
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
 
-        self.setWindowTitle("Widgets App")
+        self.setWindowTitle(f"Bandit - Game Launcher v{version}")
 
         layout = QVBoxLayout()
         widgets = [
