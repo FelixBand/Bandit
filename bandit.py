@@ -1,11 +1,12 @@
-import tkinter as tk
+import customtkinter as ctk
+import tkinter as tk  # native
 import platform
 import os
 import json
 import requests
 import subprocess
 
-app = tk.Tk()
+app = ctk.CTk()
 
 version = "2.0.0"
 debug = False
@@ -26,15 +27,15 @@ app.geometry("600x800+50+50") # 50 padding
 
 # App data locations
 if platform.system() == "Windows":
-    bandit_appdata = f"{os.getenv("APPDATA")}/BanditGameLauncher"
+    bandit_appdata = f"{os.getenv('APPDATA')}/BanditGameLauncher"
     if not os.path.exists(bandit_appdata):
         os.makedirs(bandit_appdata)
 elif platform.system() == "Darwin": # MacOS
-    bandit_appdata = f"{os.path.expanduser("~")}/Library/Application Support/BanditGameLauncher"
+    bandit_appdata = f"{os.path.expanduser('~')}/Library/Application Support/BanditGameLauncher"
     if not os.path.exists(bandit_appdata):
         os.makedirs(bandit_appdata)
 elif platform.system() == "Linux":
-    bandit_appdata = f"{os.path.expanduser("~")}/.config/BanditGameLauncher"
+    bandit_appdata = f"{os.path.expanduser('~')}/.config/BanditGameLauncher"
     if not os.path.exists(bandit_appdata):
         os.makedirs(bandit_appdata)
 
@@ -129,6 +130,7 @@ ipButton.config(state=tk.DISABLED)
 
 selected_game = None
 def on_game_select(event):
+    global selected_game
     selected_game = gameList.curselection()[0] # [0] is for getting the first and only selected item, since curselection() returns multiple indices of something??
     ipButton.config(state=tk.NORMAL)
     if gameIDs[selected_game] in installedGames:
