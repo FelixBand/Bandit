@@ -420,16 +420,16 @@ def install_or_play():
                             error_msg = f"Prerequisite installation failed.\nExit code: {e.returncode}\nStdout: {e.stdout}\nStderr: {e.stderr}"
                             print(error_msg)
                             tk.messagebox.showerror("Prerequisite Installation Failed", error_msg)
+                            return False
                         except Exception as e:
                             error_msg = f"An error occurred: {e}"
                             print(error_msg)
                             tk.messagebox.showerror("Error", error_msg)
+                            return False
                         
 
-
-
             try:
-                # RUN GAME with subprocess. Important to set the working directory to the game's directory. We need to do this by concatenating the first directory of the executable path to the install path.
+                # RUN GAME
                 if OS == "Darwin":
                     subprocess.Popen(["open", game_path], cwd=os.path.dirname(game_path))
                 else:
