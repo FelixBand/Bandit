@@ -174,18 +174,17 @@ for line in rawlist:
 def make_game_list():
     for index, game_name in enumerate(gameNames):
         gameList.insert(tk.END, game_name)
-        if gameIDs[index] not in installedGames:
-            gameList.itemconfig(index, fg="gray50")
-        else:
-            gameList.itemconfig(index, fg="white")
+    update_game_list_colors()
 
 
 def update_game_list_colors():
     for index, game_id in enumerate(gameIDs):
         if game_id in installedGames:
             gameList.itemconfig(index, fg="white")
+            gameList.itemconfig(index, selectforeground="white")
         else:
             gameList.itemconfig(index, fg="gray50")
+            gameList.itemconfig(index, selectforeground="gray50")
 
 make_game_list()
 
