@@ -26,8 +26,9 @@ def download_file(url, location=".", timeout = 10):
 
 # window properties
 app.title(f"Bandit - Game Launcher v{version}")
-app.minsize(300, 400)
+app.minsize(450, 600)
 app.geometry("650x700+50+50") # 50 padding
+ctk.set_appearance_mode("dark")
 
 if debug:
     OS = "Windows"
@@ -106,9 +107,9 @@ download_file(f"https://thuis.felixband.nl/bandit/{OS}/prereq_paths.json", bandi
 
 # if it doesn't exist, make local file to store installed games in
 try:
-    open(f"{bandit_userdata}/installed_games.json", "r")
+    open(f"{bandit_program_data}/installed_games.json", "r")
 except FileNotFoundError:
-    with open(f"{bandit_userdata}/installed_games.json", "w") as f:
+    with open(f"{bandit_program_data}/installed_games.json", "w") as f:
         f.write('{"Windows": {}, "Linux": {}, "Darwin": {}}') # empty json object
 
 # installed_games.json format:
@@ -122,7 +123,7 @@ installedGames = []
 def refresh_installed_games():
     global installedGames
     installedGames = [] # Reset the list so we don't append to old data
-    with open(f"{bandit_userdata}/installed_games.json", "r") as f:
+    with open(f"{bandit_program_data}/installed_games.json", "r") as f:
         installed_games = json.load(f)
         for game_id in installed_games[OS]:
             installedGames.append(game_id)
@@ -171,12 +172,20 @@ for line in rawlist:
         gameMPstatus.append("Unknown")
 
 def make_game_list():
-    for game_name in gameNames:
-        if gameIDs[gameNames.index(game_name)] not in installedGames:
-            gameList.insert(tk.END, game_name)
-            gameList.itemconfig(tk.END, fg="gray50") # gray out uninstalled games
+    for index, game_name in enumerate(gameNames):
+        gameList.insert(tk.END, game_name)
+        if gameIDs[index] not in installedGames:
+            gameList.itemconfig(index, fg="gray50")
         else:
-            gameList.insert(tk.END, game_name)
+            gameList.itemconfig(index, fg="white")
+
+
+def update_game_list_colors():
+    for index, game_id in enumerate(gameIDs):
+        if game_id in installedGames:
+            gameList.itemconfig(index, fg="white")
+        else:
+            gameList.itemconfig(index, fg="gray50")
 
 make_game_list()
 
@@ -198,6 +207,9 @@ def on_game_select(event):
             ipButton.config(state=tk.NORMAL)
         else:
             ipButton.config(state=tk.DISABLED)
+    if currently_downloading and selected_game == currently_downloading_game:
+        ipButton.config(text="Cancel Download")
+        ipButton.config(state=tk.NORMAL)
     print(f"{selected_game}: name: {gameNames[selected_game]} id: {gameIDs[selected_game]} size: {gameSizes[selected_game]} multiplayer: {gameMPstatus[selected_game]}") # debug info
 
 gameList.bind("<<ListboxSelect>>", on_game_select)
@@ -222,7 +234,15 @@ def download_game(game_id):
 
                 def read(self, size=-1):
                     nonlocal downloaded
+                    global currently_downloading
+
+                    if not currently_downloading:
+                        raise Exception("Download cancelled")
+
                     data = self.raw.read(size)
+
+                    if not currently_downloading:
+                        raise Exception("Download cancelled")
 
                     if data:
                         downloaded += len(data)
@@ -247,12 +267,14 @@ def download_game(game_id):
 
                             # Format ETA
                             if eta > 3600:
-                                eta_str = time.strftime("%H:%M:%S", time.gmtime(eta))
+                                eta_str = time.strftime("%H hour(s) and %M minutes remaining", time.gmtime(eta))
+                            elif eta > 60:
+                                eta_str = time.strftime(str(int(eta / 60)) + " minute(s) remaining", time.gmtime(eta))
                             else:
-                                eta_str = time.strftime("%M:%S", time.gmtime(eta))
+                                eta_str = time.strftime("Less than a minute remaining", time.gmtime(eta))
 
                             print(
-                                f"\rDownloading {game_id}: {percent:.2f}% | {speed_str} | ETA {eta_str}",
+                                f"\rDownloading {game_id}: {percent:.2f}% | {speed_str} | ETA: {eta_str}",
                                 end=""
                             )
 
@@ -260,7 +282,7 @@ def download_game(game_id):
                             def update_ui():
                                 progress.set(percent)
                                 infoLabel.config(
-                                    text=f"Downloading {gameNames[selected_game]}: {percent:.2f}%\n{speed_str} • ETA {eta_str}"
+                                    text=f"Downloading {gameNames[currently_downloading_game]}: {percent:.2f}%\n{speed_str} • ETA {eta_str}"
                                 )
 
                             app.after(0, update_ui)
@@ -290,27 +312,42 @@ def download_game(game_id):
         return True
 
     except Exception as e:
-        print(f"\nFailed to install {game_id}: {e}")
+        if str(e) == "Download cancelled":
+            print("\nDownload cancelled.")
 
-        # ✅ Reset UI after failure
-        def fail_ui():
-            progress.set(0)
-            infoLabel.config(text="Download failed.")
+            def cancel_ui():
+                progress.set(0)
+                infoLabel.config(text="Download cancelled.")
 
-        app.after(0, fail_ui)
+            app.after(0, cancel_ui)
 
-        return False
+            return False
+        else:
+            print(f"\nFailed to install {game_id}: {e}")
+
+            def fail_ui():
+                progress.set(0)
+                infoLabel.config(text="Download failed.")
+
+            app.after(0, fail_ui)
+
+            return False
 
     finally:
         currently_downloading = False        
 
 
 def install_or_play():
-    if gameIDs[selected_game] in installedGames:
+    global currently_downloading, currently_downloading_game
+    if currently_downloading and selected_game == currently_downloading_game:
+        currently_downloading = False
+        print("Cancelling download...")
+        gameList.event_generate("<<ListboxSelect>>") # Fire the on_game_select event to update the button states and text
+    elif gameIDs[selected_game] in installedGames:
         # play the game
         print(f'Launching {selected_game}!')
         # installation path from installed_games.json + executable path from executable_paths.json
-        with open(f"{bandit_userdata}/installed_games.json", "r") as f:
+        with open(f"{bandit_program_data}/installed_games.json", "r") as f:
             installed_games = json.load(f)
             game_path = installed_games[OS][gameIDs[selected_game]]
         with open(f"{bandit_userdata}/executable_paths.json", "r") as f:
@@ -327,7 +364,6 @@ def install_or_play():
                 tk.messagebox.showerror("Error", f"Failed to launch the game. Error: {e}")
     else:
         # install the game
-        global currently_downloading_game
         currently_downloading_game = selected_game
         print(f"Installing {selected_game}")
         ipButton.config(state=tk.DISABLED)
@@ -340,27 +376,28 @@ def install_or_play():
 
                 if success:
                     # update installed_games.json
-                    with open(f"{bandit_userdata}/installed_games.json", "r") as f:
+                    with open(f"{bandit_program_data}/installed_games.json", "r") as f:
                         installed_games = json.load(f)
 
                     installed_games[OS][gameIDs[currently_downloading_game]] = bandit_games_folder
 
-                    with open(f"{bandit_userdata}/installed_games.json", "w") as f:
+                    with open(f"{bandit_program_data}/installed_games.json", "w") as f:
                         json.dump(installed_games, f, indent=4)
 
                     # refresh UI
-                    gameList.delete(0, tk.END)
                     refresh_installed_games()
-                    make_game_list()
+                    update_game_list_colors()
+                    gameList.event_generate("<<ListboxSelect>>") # Fire the on_game_select event to update the button states and text
                     currently_downloading = False
                 else:
-                    tk.messagebox.showerror("Error", "Failed to install the game.")
+                    print("Failed to install the game for some reason")
                     currently_downloading = False
 
             # safely update UI from main thread
             app.after(0, after)
 
         threading.Thread(target=task, daemon=True).start()
+        gameList.event_generate("<<ListboxSelect>>") # Fire the on_game_select event to update the button states and text
 
 def get_first_folder_in_executable_path(game_id):
     with open(f"{bandit_userdata}/executable_paths.json", "r") as f:
@@ -372,7 +409,7 @@ def get_first_folder_in_executable_path(game_id):
 
 def uninstall_game():
     print('gonna nuke')
-    with open(f"{bandit_userdata}/installed_games.json", "r") as f:
+    with open(f"{bandit_program_data}/installed_games.json", "r") as f:
         installed_games = json.load(f)
     game_id = gameIDs[selected_game]
     full_game_path = os.path.join(installed_games[OS][game_id], get_first_folder_in_executable_path(game_id))
@@ -382,15 +419,20 @@ def uninstall_game():
     try:
         shutil.rmtree(full_game_path) # remove the game's folder and all its contents
         del installed_games[OS][game_id] # remove from installed_games.json
-        with open(f"{bandit_userdata}/installed_games.json", "w") as f:
+        with open(f"{bandit_program_data}/installed_games.json", "w") as f:
             json.dump(installed_games, f, indent=4)
         # refresh UI
-        gameList.delete(0, tk.END)
         refresh_installed_games()
-        make_game_list()
+        update_game_list_colors()
+        infoLabel.config(text="Game uninstalled successfully.")
         print(f'nuke successful. Deleted {full_game_path}')
     except Exception as e:
-        tk.messagebox.showerror("Error", f"Failed to uninstall the game. Error: {e}")
+        tk.messagebox.showerror("Error", f"Failed to uninstall the game. Error: {e}. Removing installation entry anyway.")
+        del installed_games[OS][game_id] # remove from installed_games.json anyway, since the game is probably already broken
+        with open(f"{bandit_program_data}/installed_games.json", "w") as f:
+            json.dump(installed_games, f, indent=4)
+
+    gameList.event_generate("<<ListboxSelect>>") # Fire the on_game_select event to update the button states and text
 
 # Download/play button
 ipButton = tk.Button(
