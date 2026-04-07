@@ -2,9 +2,9 @@
 ; SEE THE DOCUMENTATION FOR DETAILS ON CREATING INNO SETUP SCRIPT FILES!
 
 #define MyAppName "Bandit - Game Launcher"
-#define MyAppVersion "1.6.1"
+#define MyAppVersion "2.0.0"
 #define MyAppPublisher "Felix Band"
-#define MyAppURL "https://thuis.felixband.nl/"
+#define MyAppURL "https://felixband.nl/"
 #define MyAppExeName "Bandit.exe"
 
 [Setup]
@@ -14,6 +14,7 @@ AppId={{C4D377D8-BD5C-4D99-8204-3303C2A27918}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 ;AppVerName={#MyAppName} {#MyAppVersion}
+VersionInfoVersion={#MyAppVersion}
 AppPublisher={#MyAppPublisher}
 AppPublisherURL={#MyAppURL}
 AppSupportURL={#MyAppURL}
@@ -21,8 +22,6 @@ AppUpdatesURL={#MyAppURL}
 DefaultDirName={autopf}\{#MyAppName}
 DisableProgramGroupPage=yes
 ; Remove the following line to run in administrative install mode (install for all users.)
-; PrivilegesRequired=lowest
-PrivilegesRequiredOverridesAllowed=dialog
 OutputDir=Compiled Installer
 OutputBaseFilename=Bandit Setup
 SetupIconFile=icon.ico
