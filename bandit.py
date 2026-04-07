@@ -8,6 +8,7 @@ import subprocess
 import tarfile
 import threading
 import shutil
+import time
 
 app = ctk.CTk()
 
@@ -204,8 +205,8 @@ gameList.bind("<<ListboxSelect>>", on_game_select)
 def download_game(game_id):
     global currently_downloading
     currently_downloading = True
+
     url = f"https://thuis.felixband.nl/bandit/{OS}/{game_id}.tar.gz"
-    bandit_program_data
 
     try:
         with requests.get(url, stream=True, timeout=10) as response:
@@ -213,6 +214,7 @@ def download_game(game_id):
 
             total_size = int(response.headers.get("Content-Length", 0))
             downloaded = 0
+            start_time = time.time()
 
             class ProgressFile:
                 def __init__(self, raw):
@@ -221,14 +223,51 @@ def download_game(game_id):
                 def read(self, size=-1):
                     nonlocal downloaded
                     data = self.raw.read(size)
+
                     if data:
                         downloaded += len(data)
+
+                        elapsed = time.time() - start_time
+                        speed = downloaded / max(elapsed, 0.001) # bytes/sec
+
                         if total_size:
                             percent = (downloaded / total_size) * 100
-                            print(f"\rDownloading {game_id}: {percent:.2f}%", end="")
-                            progress.set(percent)
+                            remaining = total_size - downloaded
+                            eta = remaining / speed if speed > 0 else 0
+
+                            # Format speed
+                            speed_kb = speed / 1024
+                            speed_mb = speed_kb / 1024
+
+                            # Update the speed and ETA display every second, to avoid jittery UI updates
+                            if speed_mb >= 1:
+                                speed_str = f"{speed_mb:.2f} MB/s"
+                            else:
+                                speed_str = f"{speed_kb:.2f} KB/s"
+
+                            # Format ETA
+                            if eta > 3600:
+                                eta_str = time.strftime("%H:%M:%S", time.gmtime(eta))
+                            else:
+                                eta_str = time.strftime("%M:%S", time.gmtime(eta))
+
+                            print(
+                                f"\rDownloading {game_id}: {percent:.2f}% | {speed_str} | ETA {eta_str}",
+                                end=""
+                            )
+
+                            # safe UI update
+                            def update_ui():
+                                progress.set(percent)
+                                infoLabel.config(
+                                    text=f"Downloading {gameNames[selected_game]}: {percent:.2f}%\n{speed_str} • ETA {eta_str}"
+                                )
+
+                            app.after(0, update_ui)
+
                         else:
                             print(f"\rDownloading {game_id}: {downloaded} bytes", end="")
+
                     return data
 
                 def readable(self):
@@ -240,14 +279,30 @@ def download_game(game_id):
                 tar.extractall(path=bandit_games_folder)
 
         print(f"\n{game_id} installed successfully.")
-        progress.set(0)
+
+        # ✅ Reset UI after success
+        def finish_ui():
+            progress.set(0)
+            infoLabel.config(text="Download complete!")
+        
+        app.after(0, finish_ui)
+
         return True
 
     except Exception as e:
         print(f"\nFailed to install {game_id}: {e}")
-        progress.set(0)
+
+        # ✅ Reset UI after failure
+        def fail_ui():
+            progress.set(0)
+            infoLabel.config(text="Download failed.")
+
+        app.after(0, fail_ui)
+
         return False
-        
+
+    finally:
+        currently_downloading = False        
 
 
 def install_or_play():
@@ -272,6 +327,7 @@ def install_or_play():
                 tk.messagebox.showerror("Error", f"Failed to launch the game. Error: {e}")
     else:
         # install the game
+        global currently_downloading_game
         currently_downloading_game = selected_game
         print(f"Installing {selected_game}")
         ipButton.config(state=tk.DISABLED)
@@ -321,7 +377,7 @@ def uninstall_game():
     game_id = gameIDs[selected_game]
     full_game_path = os.path.join(installed_games[OS][game_id], get_first_folder_in_executable_path(game_id))
     # Ask for confirmation
-    if not tk.messagebox.askyesno("Confirm Uninstall", f"Are you sure you want to uninstall {selected_game}? This will delete: {full_game_path}"):
+    if not tk.messagebox.askyesno("Confirm Uninstall", f"Are you sure you want to uninstall {gameNames[selected_game]}? This will delete: {full_game_path}"):
         return
     try:
         shutil.rmtree(full_game_path) # remove the game's folder and all its contents
@@ -354,6 +410,18 @@ uninstallButton = tk.Button(
 )
 uninstallButton.pack(fill="x",pady=10, padx=20)
 uninstallButton.config(state=tk.DISABLED)
+
+# Info label for download speed, percentage and ETA. Centered text
+# Monospace so it doesnt jitter when the numbers change. White text on dark background to fit the theme.
+# 2 Lines, on line two will be the ETA
+infoLabel = tk.Label(
+    app,
+    text="",
+    font=("Courier", 12),
+    bg="#1b1b1b",
+    fg="white"
+)
+infoLabel.pack(pady=10, padx=20)
 
 # Progress bar. span the progress bar across the whole window with some padding
 progress = tk.DoubleVar()
