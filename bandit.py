@@ -56,17 +56,36 @@ if platform.system() == "Windows":
         if not os.path.exists(bandit_install_location):
             print("Failed to create system-wide folder. Please run this program as administrator.")
             exit(1)
-else:
+elif platform.system() == "Linux":
     bandit_install_location = "/usr/local/share/BanditGameLauncher"
     # same for osx and linux
     print('check if exists')
     if not os.path.exists(bandit_install_location):
         print('create')
         # visual sudo prompt using pkexec. combine two commands so the user doesn't have to enter their password twice
-        subprocess.run(["pkexec", "sh", "-c", f"mkdir {os.path.join(bandit_install_location, 'Games')} && chmod 777 {bandit_install_location}"])
+        subprocess.run(["pkexec", "sh", "-c", f"mkdir {bandit_install_location} && mkdir {os.path.join(bandit_install_location, 'Games')} && chmod 777 {bandit_install_location} && && chmod 777 {os.path.join(bandit_install_location, 'Games')}"])
         # if fails, exit
         if not os.path.exists(bandit_install_location):
             print("Failed to create system-wide folder. Please run this program as root or with sudo.")
+            exit(1)
+elif platform.system() == "Darwin":
+    bandit_install_location = "/Library/Application Support/BanditGameLauncher"
+
+    if not os.path.exists(bandit_install_location):
+        print("Creating system-wide folder...")
+
+        try:
+            subprocess.run([
+                "osascript",
+                "-e",
+                f'do shell script "mkdir -p \\"{bandit_install_location}/Games\\" && chmod 777 \\"{bandit_install_location}\\"" with administrator privileges'
+            ])
+        except Exception as e:
+            print(f"Failed to create system-wide folder: {e}")
+            exit(1)
+
+        if not os.path.exists(bandit_install_location):
+            print("Failed to create system-wide folder. Please run this program as administrator.")
             exit(1)
 
 if debug:
