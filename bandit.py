@@ -9,6 +9,7 @@ import tarfile
 import threading
 import shutil
 import time
+import base64
 
 app = ctk.CTk()
 
@@ -110,7 +111,13 @@ try:
     open(f"{bandit_program_data}/installed_games.json", "r")
 except FileNotFoundError:
     with open(f"{bandit_program_data}/installed_games.json", "w") as f:
-        f.write('{"Windows": {}, "Linux": {}, "Darwin": {}}') # empty json object
+        f.write('{"Windows": {}, "Linux": {}, "Darwin": {}}')
+
+try:
+    open(f"{bandit_userdata}/installed_prereqs.json", "r")
+except FileNotFoundError:
+    with open(f"{bandit_userdata}/installed_prereqs.json", "w") as f:
+        f.write('{}') # empty json object
 
 # installed_games.json format:
 # {
@@ -120,6 +127,8 @@ except FileNotFoundError:
 # }
 installedGames = []
 
+installedPrereqs = set()
+
 def refresh_installed_games():
     global installedGames
     installedGames = [] # Reset the list so we don't append to old data
@@ -128,7 +137,16 @@ def refresh_installed_games():
         for game_id in installed_games[OS]:
             installedGames.append(game_id)
 
+def refresh_installed_prereqs():
+    global installedPrereqs
+    installedPrereqs = set()
+    with open(f"{bandit_userdata}/installed_prereqs.json", "r") as f:
+        prereqs = json.load(f)
+        for game_id in prereqs:
+            installedPrereqs.add(game_id)
+
 refresh_installed_games()
+refresh_installed_prereqs()
 
 if OS == "Darwin":
     fontSize = 18
@@ -353,6 +371,63 @@ def install_or_play():
             executable_paths = json.load(f)
             game_path = f"{game_path}/{executable_paths[gameIDs[selected_game]]}"
 
+            # Install prerequisites
+            with open(f"{bandit_userdata}/prereq_paths.json", "r") as f:
+                prereq_paths = json.load(f)
+                if gameIDs[selected_game] in prereq_paths and gameIDs[selected_game] not in installedPrereqs:
+                    install_commands = []
+                    for prereq in prereq_paths[gameIDs[selected_game]]:
+                        # Normalize the path
+                        full_path = os.path.normpath(f"{installed_games[OS][gameIDs[selected_game]]}/{get_first_folder_in_executable_path(gameIDs[selected_game])}/{prereq['path']}")
+                        
+                        # Run the prerequisite directly in PowerShell
+                        if prereq["command"]:
+                            cmd = f'& "{full_path}" {prereq["command"]}'
+                        else:
+                            cmd = f'& "{full_path}"'
+                        install_commands.append(cmd)
+                    
+                    # Join commands with semicolons to make a single script
+                    inner_script = "; ".join(install_commands)
+
+                    if OS == "Windows" and install_commands:
+                        try:
+                            print("Requesting single UAC elevation...")
+                            
+                            # 1. PowerShell requires UTF-16LE encoding for its -EncodedCommand parameter
+                            encoded_bytes = inner_script.encode('utf-16le')
+                            encoded_script = base64.b64encode(encoded_bytes).decode('utf-8')
+                            
+                            # 2. PowerShell requires UTF-16LE encoding for its -EncodedCommand parameter
+                            # 2. Pass the Base64 string to the elevated PowerShell. 
+                            # No quote conflicts exist because the payload is just a block of letters and numbers!
+                            ps_shell_command = f"Start-Process powershell -ArgumentList '-NoProfile -EncodedCommand {encoded_script}' -Verb RunAs -Wait"
+                            
+                            # 3. Execute and capture output
+                            result = subprocess.run(["powershell", "-Command", ps_shell_command], capture_output=True, text=True, check=True)
+                            
+                            # Mark prereqs as installed
+                            with open(f"{bandit_userdata}/installed_prereqs.json", "r") as f:
+                                prereqs = json.load(f)
+                            prereqs[gameIDs[selected_game]] = True
+                            with open(f"{bandit_userdata}/installed_prereqs.json", "w") as f:
+                                json.dump(prereqs, f, indent=4)
+                            refresh_installed_prereqs()
+                            
+                            tk.messagebox.showinfo("Success", "All prerequisites installed.")
+                            
+                        except subprocess.CalledProcessError as e:
+                            error_msg = f"Prerequisite installation failed.\nExit code: {e.returncode}\nStdout: {e.stdout}\nStderr: {e.stderr}"
+                            print(error_msg)
+                            tk.messagebox.showerror("Prerequisite Installation Failed", error_msg)
+                        except Exception as e:
+                            error_msg = f"An error occurred: {e}"
+                            print(error_msg)
+                            tk.messagebox.showerror("Error", error_msg)
+                        
+
+
+
             try:
                 # RUN GAME with subprocess. Important to set the working directory to the game's directory. We need to do this by concatenating the first directory of the executable path to the install path.
                 if OS == "Darwin":
@@ -420,6 +495,14 @@ def uninstall_game():
         del installed_games[OS][game_id] # remove from installed_games.json
         with open(f"{bandit_program_data}/installed_games.json", "w") as f:
             json.dump(installed_games, f, indent=4)
+        # Also remove from installed_prereqs if present
+        with open(f"{bandit_userdata}/installed_prereqs.json", "r") as f:
+            prereqs = json.load(f)
+        if game_id in prereqs:
+            del prereqs[game_id]
+            with open(f"{bandit_userdata}/installed_prereqs.json", "w") as f:
+                json.dump(prereqs, f, indent=4)
+            refresh_installed_prereqs()
         # refresh UI
         refresh_installed_games()
         update_game_list_colors()
@@ -430,6 +513,14 @@ def uninstall_game():
         del installed_games[OS][game_id] # remove from installed_games.json anyway, since the game is probably already broken
         with open(f"{bandit_program_data}/installed_games.json", "w") as f:
             json.dump(installed_games, f, indent=4)
+        # Also remove from installed_prereqs if present
+        with open(f"{bandit_userdata}/installed_prereqs.json", "r") as f:
+            prereqs = json.load(f)
+        if game_id in prereqs:
+            del prereqs[game_id]
+            with open(f"{bandit_userdata}/installed_prereqs.json", "w") as f:
+                json.dump(prereqs, f, indent=4)
+            refresh_installed_prereqs()
 
     gameList.event_generate("<<ListboxSelect>>") # Fire the on_game_select event to update the button states and text
 
