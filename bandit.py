@@ -28,81 +28,86 @@ app.title(f"Bandit - Game Launcher v{version}")
 app.minsize(300, 400)
 app.geometry("650x700+50+50") # 50 padding
 
+if debug:
+    OS = "Windows"
+else:
+    OS = platform.system()
+
 # App data locations
 if platform.system() == "Windows":
-    bandit_appdata = f"{os.getenv('APPDATA')}/BanditGameLauncher"
-    if not os.path.exists(bandit_appdata):
-        os.makedirs(bandit_appdata)
+    bandit_userdata = f"{os.getenv('APPDATA')}/BanditGameLauncher"
+    if not os.path.exists(bandit_userdata):
+        os.makedirs(bandit_userdata)
 elif platform.system() == "Darwin": # MacOS
-    bandit_appdata = f"{os.path.expanduser('~')}/Library/Application Support/BanditGameLauncher"
-    if not os.path.exists(bandit_appdata):
-        os.makedirs(bandit_appdata)
+    bandit_userdata = f"{os.path.expanduser('~')}/Library/Application Support/BanditGameLauncher"
+    if not os.path.exists(bandit_userdata):
+        os.makedirs(bandit_userdata)
 elif platform.system() == "Linux":
-    bandit_appdata = f"{os.path.expanduser('~')}/.config/BanditGameLauncher"
-    if not os.path.exists(bandit_appdata):
-        os.makedirs(bandit_appdata)
+    bandit_userdata = f"{os.path.expanduser('~')}/.config/BanditGameLauncher"
+    if not os.path.exists(bandit_userdata):
+        os.makedirs(bandit_userdata)
 
 # Game install locations.
 # I want system wide installs, so every user on a PC can use the same games.
 if platform.system() == "Windows":
-    bandit_install_location = os.path.join(os.getenv("PROGRAMDATA"), "BanditGameLauncher")
-    if not os.path.exists(bandit_install_location):
+    bandit_program_data = os.path.join(os.getenv("PROGRAMDATA"), "BanditGameLauncher")
+    if not os.path.exists(bandit_program_data):
         print("Creating system-wide folder...")
         try:
-            os.makedirs(os.path.join(bandit_install_location, "Games"))
+            os.makedirs(os.path.join(bandit_program_data, "Games"))
         except Exception as e:
             print(f"Failed to create system-wide folder: {e}")
             exit(1)
-        if not os.path.exists(bandit_install_location):
+        if not os.path.exists(bandit_program_data):
             print("Failed to create system-wide folder. Please run this program as administrator.")
             exit(1)
 elif platform.system() == "Linux":
-    bandit_install_location = "/usr/local/share/BanditGameLauncher"
+    bandit_program_data = "/usr/local/share/BanditGameLauncher"
     # same for osx and linux
     print('check if exists')
-    if not os.path.exists(bandit_install_location):
+    if not os.path.exists(bandit_program_data):
         print('create')
         # visual sudo prompt using pkexec. combine two commands so the user doesn't have to enter their password twice
-        subprocess.run(["pkexec", "sh", "-c", f"mkdir {bandit_install_location} && mkdir {os.path.join(bandit_install_location, 'Games')} && chmod 777 {bandit_install_location} && && chmod 777 {os.path.join(bandit_install_location, 'Games')}"])
+        subprocess.run(["pkexec", "sh", "-c", f"mkdir {bandit_program_data} && mkdir {os.path.join(bandit_program_data, 'Games')} && chmod 777 {bandit_program_data} && chmod 777 {os.path.join(bandit_program_data, 'Games')}"])
         # if fails, exit
-        if not os.path.exists(bandit_install_location):
+        if not os.path.exists(bandit_program_data):
             print("Failed to create system-wide folder. Please run this program as root or with sudo.")
             exit(1)
 elif platform.system() == "Darwin":
-    bandit_install_location = "/Library/Application Support/BanditGameLauncher"
+    bandit_program_data = "/Library/Application Support/BanditGameLauncher"
 
-    if not os.path.exists(bandit_install_location):
+    if not os.path.exists(bandit_program_data):
         print("Creating system-wide folder...")
 
         try:
             subprocess.run([
                 "osascript",
                 "-e",
-                f'do shell script "mkdir -p \\"{bandit_install_location}/Games\\" && chmod 777 \\"{bandit_install_location}\\"" with administrator privileges'
+                f'do shell script "mkdir -p \\"{bandit_program_data}\\" && chmod 777 \\"{bandit_program_data}\\"" with administrator privileges'
             ])
         except Exception as e:
             print(f"Failed to create system-wide folder: {e}")
             exit(1)
 
-        if not os.path.exists(bandit_install_location):
+        if not os.path.exists(bandit_program_data):
             print("Failed to create system-wide folder. Please run this program as administrator.")
             exit(1)
 
-if debug:
-    OS = "Windows"
+if OS == "Darwin":
+    bandit_games_folder = "/Applications" # on macOS, we dump the games in the Applcations folder. Way nicer.
 else:
-    OS = platform.system()
+    bandit_games_folder = os.path.join(bandit_program_data, "Games")
 
 # Download necessary files!    
-download_file(f"https://thuis.felixband.nl/bandit/{OS}/list.txt", bandit_appdata)
-download_file(f"https://thuis.felixband.nl/bandit/{OS}/executable_paths.json", bandit_appdata)
-download_file(f"https://thuis.felixband.nl/bandit/{OS}/prereq_paths.json", bandit_appdata)
+download_file(f"https://thuis.felixband.nl/bandit/{OS}/list.txt", bandit_userdata)
+download_file(f"https://thuis.felixband.nl/bandit/{OS}/executable_paths.json", bandit_userdata)
+download_file(f"https://thuis.felixband.nl/bandit/{OS}/prereq_paths.json", bandit_userdata)
 
 # if it doesn't exist, make local file to store installed games in
 try:
-    open(f"{bandit_appdata}/installed_games.json", "r")
+    open(f"{bandit_userdata}/installed_games.json", "r")
 except FileNotFoundError:
-    with open(f"{bandit_appdata}/installed_games.json", "w") as f:
+    with open(f"{bandit_userdata}/installed_games.json", "w") as f:
         f.write('{"Windows": {}, "Linux": {}, "Darwin": {}}') # empty json object
 
 # installed_games.json format:
@@ -116,16 +121,20 @@ installedGames = []
 def refresh_installed_games():
     global installedGames
     installedGames = [] # Reset the list so we don't append to old data
-    with open(f"{bandit_appdata}/installed_games.json", "r") as f:
+    with open(f"{bandit_userdata}/installed_games.json", "r") as f:
         installed_games = json.load(f)
         for game_id in installed_games[OS]:
             installedGames.append(game_id)
 
 refresh_installed_games()
 
+if OS == "Darwin":
+    fontSize = 18
+else:
+    fontSize = 14
 gameList = tk.Listbox(
     app,
-    font=(None, 14),
+    font=(None, fontSize),
     bg="#1b1b1b",       # dark background
     fg="white",         # text color
     selectbackground="#444",  # selected item background
@@ -142,7 +151,7 @@ gameIDs = []
 gameSizes = []
 gameMPstatus = []
 
-for line in open(f"{bandit_appdata}/list.txt", "r").readlines():
+for line in open(f"{bandit_userdata}/list.txt", "r").readlines():
     rawlist.append(line.strip()) # strip removes newline (\n) character, which you always want, duh??
     # here I turn the raw .txt file into an array.
 rawlist.sort() # Sort alphabetically
@@ -196,7 +205,7 @@ def download_game(game_id):
     global currently_downloading
     currently_downloading = True
     url = f"https://thuis.felixband.nl/bandit/{OS}/{game_id}.tar.gz"
-    bandit_install_location
+    bandit_program_data
 
     try:
         with requests.get(url, stream=True, timeout=10) as response:
@@ -228,7 +237,7 @@ def download_game(game_id):
             wrapped = ProgressFile(response.raw)
 
             with tarfile.open(fileobj=wrapped, mode="r|gz") as tar:
-                tar.extractall(path=os.path.join(bandit_install_location, "Games"))
+                tar.extractall(path=bandit_games_folder)
 
         print(f"\n{game_id} installed successfully.")
         progress.set(0)
@@ -246,16 +255,19 @@ def install_or_play():
         # play the game
         print(f'Launching {selected_game}!')
         # installation path from installed_games.json + executable path from executable_paths.json
-        with open(f"{bandit_appdata}/installed_games.json", "r") as f:
+        with open(f"{bandit_userdata}/installed_games.json", "r") as f:
             installed_games = json.load(f)
             game_path = installed_games[OS][gameIDs[selected_game]]
-        with open(f"{bandit_appdata}/executable_paths.json", "r") as f:
+        with open(f"{bandit_userdata}/executable_paths.json", "r") as f:
             executable_paths = json.load(f)
             game_path = f"{game_path}/{executable_paths[gameIDs[selected_game]]}"
 
             try:
                 # RUN GAME with subprocess. Important to set the working directory to the game's directory. We need to do this by concatenating the first directory of the executable path to the install path.
-                subprocess.Popen(game_path, cwd=os.path.dirname(game_path))
+                if OS == "Darwin":
+                    subprocess.Popen(["open", game_path], cwd=os.path.dirname(game_path))
+                else:
+                    subprocess.Popen(game_path, cwd=os.path.dirname(game_path))
             except Exception as e:
                 tk.messagebox.showerror("Error", f"Failed to launch the game. Error: {e}")
     else:
@@ -272,12 +284,12 @@ def install_or_play():
 
                 if success:
                     # update installed_games.json
-                    with open(f"{bandit_appdata}/installed_games.json", "r") as f:
+                    with open(f"{bandit_userdata}/installed_games.json", "r") as f:
                         installed_games = json.load(f)
 
-                    installed_games[OS][gameIDs[currently_downloading_game]] = os.path.join(bandit_install_location, "Games")
+                    installed_games[OS][gameIDs[currently_downloading_game]] = bandit_games_folder
 
-                    with open(f"{bandit_appdata}/installed_games.json", "w") as f:
+                    with open(f"{bandit_userdata}/installed_games.json", "w") as f:
                         json.dump(installed_games, f, indent=4)
 
                     # refresh UI
@@ -295,7 +307,7 @@ def install_or_play():
         threading.Thread(target=task, daemon=True).start()
 
 def get_first_folder_in_executable_path(game_id):
-    with open(f"{bandit_appdata}/executable_paths.json", "r") as f:
+    with open(f"{bandit_userdata}/executable_paths.json", "r") as f:
         executable_paths = json.load(f)
         exec_path = executable_paths[game_id]
         first_folder = exec_path.split("/")[0] # get the first folder in the path
@@ -304,7 +316,7 @@ def get_first_folder_in_executable_path(game_id):
 
 def uninstall_game():
     print('gonna nuke')
-    with open(f"{bandit_appdata}/installed_games.json", "r") as f:
+    with open(f"{bandit_userdata}/installed_games.json", "r") as f:
         installed_games = json.load(f)
     game_id = gameIDs[selected_game]
     full_game_path = os.path.join(installed_games[OS][game_id], get_first_folder_in_executable_path(game_id))
@@ -314,7 +326,7 @@ def uninstall_game():
     try:
         shutil.rmtree(full_game_path) # remove the game's folder and all its contents
         del installed_games[OS][game_id] # remove from installed_games.json
-        with open(f"{bandit_appdata}/installed_games.json", "w") as f:
+        with open(f"{bandit_userdata}/installed_games.json", "w") as f:
             json.dump(installed_games, f, indent=4)
         # refresh UI
         gameList.delete(0, tk.END)
