@@ -64,7 +64,7 @@ if platform.system() == "Windows":
             print("Failed to create system-wide folder. Please run this program as administrator.")
             exit(1)
 elif platform.system() == "Linux":
-    bandit_program_data = "/usr/local/share/BanditGameLauncher"
+    bandit_program_data = "/etc/BanditGameLauncher"
     # same for osx and linux
     print('check if exists')
     if not os.path.exists(bandit_program_data):
