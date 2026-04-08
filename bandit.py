@@ -50,8 +50,7 @@ elif platform.system() == "Linux":
     if not os.path.exists(bandit_userdata):
         os.makedirs(bandit_userdata)
 
-# Game install locations.
-# I want system wide installs, so every user on a PC can use the same games.
+# System wide data + game install location.
 if platform.system() == "Windows":
     bandit_program_data = os.path.join(os.getenv("PROGRAMDATA"), "BanditGameLauncher")
     if not os.path.exists(bandit_program_data):
@@ -119,12 +118,6 @@ except FileNotFoundError:
     with open(f"{bandit_userdata}/installed_prereqs.json", "w") as f:
         f.write('{}') # empty json object
 
-# installed_games.json format:
-# {
-#     "Windows/Linux/Darwin": {
-#         "game_id": "/path/to/game/parent/directory"
-#     }
-# }
 installedGames = []
 
 installedPrereqs = set()
@@ -543,9 +536,7 @@ uninstallButton = tk.Button(
 uninstallButton.pack(fill="x",pady=10, padx=20)
 uninstallButton.config(state=tk.DISABLED)
 
-# Info label for download speed, percentage and ETA. Centered text
-# Monospace so it doesnt jitter when the numbers change. White text on dark background to fit the theme.
-# 2 Lines, on line two will be the ETA
+# Info label for download speed, percentage and ETA.
 infoLabel = tk.Label(
     app,
     text="",
@@ -555,7 +546,6 @@ infoLabel = tk.Label(
 )
 infoLabel.pack(pady=10, padx=20)
 
-# Progress bar. span the progress bar across the whole window with some padding
 progress = tk.DoubleVar()
 progressBar = tk.ttk.Progressbar(app, variable=progress, maximum=100)
 progressBar.pack(fill="x", expand=False, padx=20, pady=10)
