@@ -165,6 +165,11 @@ gameSizes = []
 gameMPstatus = []
 
 for line in open(f"{bandit_userdata}/list.txt", "r").readlines():
+    rawlist.append(line.strip()) # strip removes newline (\n) character, which you always want, duh??
+    # here I turn the raw .txt file into an array.
+rawlist.sort() # Sort alphabetically
+
+for line in rawlist:
     gameNames.append(line.split("|")[0])
     gameIDs.append(line.split("|")[1])
     # From here on, null safety in case of missing data
@@ -176,10 +181,6 @@ for line in open(f"{bandit_userdata}/list.txt", "r").readlines():
         gameMPstatus.append(line.split("|")[3].strip()) # STRIP to remove newline char otherwise chaos
     except IndexError:
         gameMPstatus.append("Unknown")
-
-    rawlist.append(line.strip()) # strip removes newline (\n) character, which you always want, duh??
-    # here I turn the raw .txt file into an array.
-rawlist.sort() # Sort alphabetically
     
 
 def make_game_list():
