@@ -165,11 +165,6 @@ gameSizes = []
 gameMPstatus = []
 
 for line in open(f"{bandit_userdata}/list.txt", "r").readlines():
-    rawlist.append(line.strip()) # strip removes newline (\n) character, which you always want, duh??
-    # here I turn the raw .txt file into an array.
-rawlist.sort() # Sort alphabetically
-
-for line in rawlist:
     gameNames.append(line.split("|")[0])
     gameIDs.append(line.split("|")[1])
     # From here on, null safety in case of missing data
@@ -178,13 +173,30 @@ for line in rawlist:
     except IndexError:
         gameSizes.append("Unknown")
     try:
-        gameMPstatus.append(line.split("|")[3])
+        gameMPstatus.append(line.split("|")[3].strip()) # STRIP to remove newline char otherwise chaos
     except IndexError:
         gameMPstatus.append("Unknown")
 
+    rawlist.append(line.strip()) # strip removes newline (\n) character, which you always want, duh??
+    # here I turn the raw .txt file into an array.
+rawlist.sort() # Sort alphabetically
+    
+
 def make_game_list():
     for index, game_name in enumerate(gameNames):
-        gameList.insert(tk.END, game_name)
+        try:
+            if gameMPstatus[index] == "1":
+                mpIcon = "🟠"
+            elif gameMPstatus[index] == "2":
+                mpIcon = "🟢"
+            elif gameMPstatus[index] == "3":
+                mpIcon = "🟩"
+            else:
+                mpIcon = "🔴"
+        except IndexError:
+            pass
+
+        gameList.insert(tk.END, mpIcon + game_name)
     update_game_list_colors()
 
 
