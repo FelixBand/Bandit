@@ -557,20 +557,23 @@ def uninstall_game():
 
 gameInfoLabel = tk.Label(app, 
     text="Welcome to Bandit!\nSelect a game to get started.", 
+    bg="#1b1b1b",
+    fg="white",
     font=(None, 14),
     anchor="w", justify="left")
 gameInfoLabel.pack(fill="x", padx=20, pady=(0,10))
 
 # Download/play button
 ipButton = tk.Button(app,
-    text="Install/Play",
-    font=(None, 14),
+    text="Install/Play", font=(None, 14),
+    bg="#444", fg="white",
     command=install_or_play)
 ipButton.pack(fill="x",pady=10, padx=20)
 ipButton.config(state=tk.DISABLED)
 
 uninstallButton = tk.Button(app,
     text="Uninstall", font=(None, 14),
+    bg="#444", fg="white",
     command=uninstall_game)
 uninstallButton.pack(fill="x",pady=10, padx=20)
 uninstallButton.config(state=tk.DISABLED)
@@ -578,6 +581,8 @@ uninstallButton.config(state=tk.DISABLED)
 # Info label for download speed, percentage and ETA.
 infoLabel = tk.Label(app,
     text="", font=("Courier", 12),
+    bg="#1b1b1b",
+    fg="white",
 )
 infoLabel.pack(pady=10, padx=20)
 
