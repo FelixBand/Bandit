@@ -145,18 +145,23 @@ if OS == "Darwin":
     fontSize = 18
 else:
     fontSize = 14
-gameList = tk.Listbox(
-    app,
-    font=(None, fontSize),
-    bg="#1b1b1b",       # dark background
-    fg="white",         # text color
-    selectbackground="#444",  # selected item background
-    selectforeground="white",
-    highlightthickness=0,     # removes ugly border
-    bd=0                     # removes border
-)
 
-gameList.pack(fill=tk.BOTH, expand=1, padx=10, pady=10)
+if OS == "Windows":
+    listfont = "Segoe UI"
+else:
+    listfont = None
+
+# Game list: replace native Listbox with a CustomTkinter scrollable frame
+# Each game will be a selectable `CTkButton` inside the scrollable frame.
+game_list_frame = ctk.CTkScrollableFrame(app, corner_radius=6)
+game_list_frame.pack(fill="both", expand=True, padx=10, pady=10)
+
+# Store per-item widgets so we can update their appearance later
+game_item_buttons = []
+
+# Track selection index
+selected_game = None
+prev_selected = None
 
 rawlist = []
 gameNames = []
@@ -184,6 +189,11 @@ for line in rawlist:
     
 
 def make_game_list():
+    # clear any existing items
+    for btn in game_item_buttons:
+        btn.destroy()
+    game_item_buttons.clear()
+
     for index, game_name in enumerate(gameNames):
         try:
             if gameMPstatus[index] == "1":
@@ -195,20 +205,51 @@ def make_game_list():
             else:
                 mpIcon = "🔴"
         except IndexError:
+            mpIcon = "🔴"
+
+        btn = ctk.CTkButton(
+            game_list_frame,
+            text=mpIcon + game_name,
+            anchor="w",
+            fg_color="transparent",
+            hover_color="#2a2a2a",
+            command=lambda i=index: select_game(i),
+            font=(listfont, fontSize)
+        )
+        btn.pack(fill="x", pady=2, padx=4)
+        game_item_buttons.append(btn)
+
+        # set initial text color based on installed state
+        try:
+            game_id = gameIDs[index]
+            if game_id in installedGames:
+                btn.configure(text_color="white")
+            else:
+                btn.configure(text_color="gray50")
+        except Exception:
             pass
 
-        gameList.insert(tk.END, mpIcon + game_name)
-    update_game_list_colors()
+    # do one pass to ensure selection visuals are correct
+    if selected_game is not None and 0 <= selected_game < len(game_item_buttons):
+        game_item_buttons[selected_game].configure(fg_color="#444444")
 
 
 def update_game_list_colors():
     for index, game_id in enumerate(gameIDs):
+        try:
+            btn = game_item_buttons[index]
+        except IndexError:
+            continue
+
         if game_id in installedGames:
-            gameList.itemconfig(index, fg="white")
-            gameList.itemconfig(index, selectforeground="white")
+            btn.configure(text_color="white")
         else:
-            gameList.itemconfig(index, fg="gray50")
-            gameList.itemconfig(index, selectforeground="gray50")
+            btn.configure(text_color="gray50")
+        # visually mark selected
+        if selected_game == index:
+            btn.configure(fg_color="#444444")
+        else:
+            btn.configure(fg_color="transparent")
 
 make_game_list()
 
@@ -216,24 +257,47 @@ currently_downloading = False
 currently_downloading_game = None
 
 selected_game = None
-def on_game_select(event):
+
+def select_game(index):
     global selected_game
-    selected_game = gameList.curselection()[0] # [0] is for getting the first and only selected item, since curselection() returns multiple indices of something??
-    if gameIDs[selected_game] in installedGames:
-        ipButton.config(text="Play")
-        ipButton.config(state=tk.NORMAL)
-        uninstallButton.config(state=tk.NORMAL)
-    else:
-        ipButton.config(text="Install")
-        uninstallButton.config(state=tk.DISABLED)
-        if not currently_downloading:
-            ipButton.config(state=tk.NORMAL)
+    global selected_game, prev_selected
+    selected_game = index
+
+    # only update previous and current selection visuals to avoid looping all items
+    try:
+        if prev_selected is not None and 0 <= prev_selected < len(game_item_buttons):
+            game_item_buttons[prev_selected].configure(fg_color="transparent")
+    except Exception:
+        pass
+
+    try:
+        if 0 <= selected_game < len(game_item_buttons):
+            game_item_buttons[selected_game].configure(fg_color="#444444")
+    except Exception:
+        pass
+
+    prev_selected = selected_game
+
+    # update buttons depending on install/download state
+    try:
+        if gameIDs[selected_game] in installedGames:
+            ipButton.configure(text="Play")
+            ipButton.configure(state="normal")
+            uninstallButton.configure(state="normal")
         else:
-            ipButton.config(state=tk.DISABLED)
-    if currently_downloading and selected_game == currently_downloading_game:
-        ipButton.config(text="Cancel Download")
-        ipButton.config(state=tk.NORMAL)
-    print(f"{selected_game}: name: {gameNames[selected_game]} id: {gameIDs[selected_game]} size: {gameSizes[selected_game]} multiplayer: {gameMPstatus[selected_game]}") # debug info
+            ipButton.configure(text="Install")
+            uninstallButton.configure(state="disabled")
+            if not currently_downloading:
+                ipButton.configure(state="normal")
+            else:
+                ipButton.configure(state="disabled")
+        if currently_downloading and selected_game == currently_downloading_game:
+            ipButton.configure(text="Cancel Download")
+            ipButton.configure(state="normal")
+    except Exception:
+        pass
+
+    print(f"{selected_game}: name: {gameNames[selected_game]} id: {gameIDs[selected_game]} size: {gameSizes[selected_game]} multiplayer: {gameMPstatus[selected_game]}")
 
     formatted_size = gameSizes[selected_game]
     if formatted_size != "Unknown":
@@ -258,9 +322,7 @@ def on_game_select(event):
     elif gameMPstatus[selected_game] == "3":
         formatted_mp_status = "🟩 This game supports online multiplayer with anyone."
 
-    gameInfoLabel.config(text=f"{gameNames[selected_game]} — {formatted_size}\n{formatted_mp_status}")
-
-gameList.bind("<<ListboxSelect>>", on_game_select)
+    gameInfoLabel.configure(text=f"{gameNames[selected_game]} — {formatted_size}\n{formatted_mp_status}")
 
 def download_game(game_id):
     global currently_downloading
@@ -328,8 +390,8 @@ def download_game(game_id):
 
                             # safe UI update
                             def update_ui():
-                                progress.set(percent)
-                                infoLabel.config(
+                                progressBar.set(percent/100)
+                                infoLabel.configure(
                                     text=f"Downloading {gameNames[currently_downloading_game]}: {percent:.2f}%\n{speed_str} • ETA {eta_str}"
                                 )
 
@@ -352,8 +414,8 @@ def download_game(game_id):
 
         # Reset UI after success
         def finish_ui():
-            progress.set(0)
-            infoLabel.config(text="Download complete!")
+            progressBar.set(0)
+            infoLabel.configure(text="Download complete!")
         
         app.after(0, finish_ui)
 
@@ -364,8 +426,8 @@ def download_game(game_id):
             print("\nDownload cancelled.")
 
             def cancel_ui():
-                progress.set(0)
-                infoLabel.config(text="Download cancelled.")
+                progressBar.set(0)
+                infoLabel.configure(text="Download cancelled.")
 
             app.after(0, cancel_ui)
 
@@ -374,8 +436,8 @@ def download_game(game_id):
             print(f"\nFailed to install {game_id}: {e}")
 
             def fail_ui():
-                progress.set(0)
-                infoLabel.config(text="Download failed.")
+                progressBar.set(0)
+                infoLabel.configure(text="Download failed.")
 
             app.after(0, fail_ui)
 
@@ -390,7 +452,8 @@ def install_or_play():
     if currently_downloading and selected_game == currently_downloading_game:
         currently_downloading = False
         print("Cancelling download...")
-        gameList.event_generate("<<ListboxSelect>>") # Fire the on_game_select event to update the button states and text
+        if selected_game is not None:
+            select_game(selected_game)
     elif gameIDs[selected_game] in installedGames:
         # play the game
         print(f'Launching {selected_game}!')
@@ -471,13 +534,13 @@ def install_or_play():
         # install the game
         currently_downloading_game = selected_game
         print(f"Installing {selected_game}")
-        ipButton.config(state=tk.DISABLED)
+        ipButton.configure(state="disabled")
 
         def task():
             success = download_game(gameIDs[selected_game])
 
             def after():
-                ipButton.config(state=tk.NORMAL)
+                ipButton.configure(state="normal")
 
                 if success:
                     # update installed_games.json
@@ -492,7 +555,8 @@ def install_or_play():
                     # refresh UI
                     refresh_installed_games()
                     update_game_list_colors()
-                    gameList.event_generate("<<ListboxSelect>>") # Fire the on_game_select event to update the button states and text
+                    if selected_game is not None:
+                        select_game(selected_game)
                     currently_downloading = False
                 else:
                     print("Failed to install the game for some reason")
@@ -502,7 +566,8 @@ def install_or_play():
             app.after(0, after)
 
         threading.Thread(target=task, daemon=True).start()
-        gameList.event_generate("<<ListboxSelect>>") # Fire the on_game_select event to update the button states and text
+        if selected_game is not None:
+            select_game(selected_game)
 
 def get_first_folder_in_executable_path(game_id):
     with open(f"{bandit_userdata}/executable_paths.json", "r") as f:
@@ -537,7 +602,7 @@ def uninstall_game():
         # refresh UI
         refresh_installed_games()
         update_game_list_colors()
-        infoLabel.config(text="Game uninstalled successfully.")
+        infoLabel.configure(text="Game uninstalled successfully.")
         print(f'nuke successful. Deleted {full_game_path}')
     except Exception as e:
         tk.messagebox.showerror("Error", f"Failed to uninstall the game. Error: {e}. Removing installation entry anyway.")
@@ -553,41 +618,43 @@ def uninstall_game():
                 json.dump(prereqs, f, indent=4)
             refresh_installed_prereqs()
 
-    gameList.event_generate("<<ListboxSelect>>") # Fire the on_game_select event to update the button states and text
+    if selected_game is not None:
+        select_game(selected_game)
 
-gameInfoLabel = tk.Label(app, 
-    text="Welcome to Bandit!\nSelect a game to get started.", 
-    bg="#1b1b1b",
-    fg="white",
-    font=(None, 14),
-    anchor="w", justify="left")
+gameInfoLabel = ctk.CTkLabel(app,
+    text="Welcome to Bandit!\nSelect a game to get started.",
+    anchor="w", justify="left",
+    font=(None, 14)
+)
 gameInfoLabel.pack(fill="x", padx=20, pady=(0,10))
 
 # Download/play button
-ipButton = tk.Button(app,
-    text="Install/Play", font=(None, 14),
-    bg="#444", fg="white",
-    command=install_or_play)
-ipButton.pack(fill="x",pady=10, padx=20)
-ipButton.config(state=tk.DISABLED)
+ipButton = ctk.CTkButton(app,
+    text="Install/Play",
+    command=install_or_play,
+    font=(None, 14)
+)
+ipButton.pack(fill="x", pady=10, padx=20)
+ipButton.configure(state="disabled")
 
-uninstallButton = tk.Button(app,
-    text="Uninstall", font=(None, 14),
-    bg="#444", fg="white",
-    command=uninstall_game)
-uninstallButton.pack(fill="x",pady=10, padx=20)
-uninstallButton.config(state=tk.DISABLED)
+uninstallButton = ctk.CTkButton(app,
+    text="Uninstall",
+    command=uninstall_game,
+    font=(None, 14)
+)
+uninstallButton.pack(fill="x", pady=10, padx=20)
+uninstallButton.configure(state="disabled")
 
 # Info label for download speed, percentage and ETA.
-infoLabel = tk.Label(app,
-    text="", font=("Courier", 12),
-    bg="#1b1b1b",
-    fg="white",
+infoLabel = ctk.CTkLabel(app,
+    text="",
+    font=("Courier", 12),
+    anchor="w",
 )
 infoLabel.pack(pady=10, padx=20)
 
-progress = tk.DoubleVar()
-progressBar = tk.ttk.Progressbar(app, variable=progress, maximum=100)
+progressBar = ctk.CTkProgressBar(app)
+progressBar.set(0)
 progressBar.pack(fill="x", expand=False, padx=20, pady=10)
 
 
