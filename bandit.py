@@ -235,6 +235,31 @@ def on_game_select(event):
         ipButton.config(state=tk.NORMAL)
     print(f"{selected_game}: name: {gameNames[selected_game]} id: {gameIDs[selected_game]} size: {gameSizes[selected_game]} multiplayer: {gameMPstatus[selected_game]}") # debug info
 
+    formatted_size = gameSizes[selected_game]
+    if formatted_size != "Unknown":
+        try:
+            size_bytes = int(formatted_size)
+            if size_bytes >= 1_000_000_000:
+                formatted_size = f"{size_bytes / 1_000_000_000:.2f} GB"
+            elif size_bytes >= 1_000_000:
+                formatted_size = f"{size_bytes / 1_000_000:.2f} MB"
+            elif size_bytes >= 1_000:
+                formatted_size = f"{size_bytes / 1_000:.2f} KB"
+            else:
+                formatted_size = f"{size_bytes} bytes"
+        except ValueError:
+            pass
+
+    formatted_mp_status = "🔴 This game is singleplayer and/or has local multiplayer only."
+    if gameMPstatus[selected_game] == "1":
+        formatted_mp_status = "🟠 This supports LAN multiplayer."
+    elif gameMPstatus[selected_game] == "2":
+        formatted_mp_status = "🟢 This supports online multiplayer with other Bandit users."
+    elif gameMPstatus[selected_game] == "3":
+        formatted_mp_status = "🟩 This game supports online multiplayer with anyone."
+
+    gameInfoLabel.config(text=f"{gameNames[selected_game]} — {formatted_size}\n{formatted_mp_status}")
+
 gameList.bind("<<ListboxSelect>>", on_game_select)
 
 def download_game(game_id):
@@ -325,7 +350,7 @@ def download_game(game_id):
 
         print(f"\n{game_id} installed successfully.")
 
-        # ✅ Reset UI after success
+        # Reset UI after success
         def finish_ui():
             progress.set(0)
             infoLabel.config(text="Download complete!")
@@ -530,32 +555,29 @@ def uninstall_game():
 
     gameList.event_generate("<<ListboxSelect>>") # Fire the on_game_select event to update the button states and text
 
+gameInfoLabel = tk.Label(app, 
+    text="Welcome to Bandit!\nSelect a game to get started.", 
+    font=(None, 14),
+    anchor="w", justify="left")
+gameInfoLabel.pack(fill="x", padx=20, pady=(0,10))
+
 # Download/play button
-ipButton = tk.Button(
-    app,
+ipButton = tk.Button(app,
     text="Install/Play",
     font=(None, 14),
-    command=install_or_play
-)
+    command=install_or_play)
 ipButton.pack(fill="x",pady=10, padx=20)
 ipButton.config(state=tk.DISABLED)
 
-uninstallButton = tk.Button(
-    app,
-    text="Uninstall",
-    font=(None, 14),
-    command=uninstall_game
-)
+uninstallButton = tk.Button(app,
+    text="Uninstall", font=(None, 14),
+    command=uninstall_game)
 uninstallButton.pack(fill="x",pady=10, padx=20)
 uninstallButton.config(state=tk.DISABLED)
 
 # Info label for download speed, percentage and ETA.
-infoLabel = tk.Label(
-    app,
-    text="",
-    font=("Courier", 12),
-    bg="#1b1b1b",
-    fg="white"
+infoLabel = tk.Label(app,
+    text="", font=("Courier", 12),
 )
 infoLabel.pack(pady=10, padx=20)
 
