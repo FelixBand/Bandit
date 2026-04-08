@@ -4,7 +4,7 @@ With this app, you can download and play games hosted on my dedicated file serve
 
 # Compiling
 
-To compile the app, the dependency Pyinstaller is used.
+To compile the app I use PyInstaller.
 Other dependencies are tkinter and customtkinter; the framework for the GUI, plyer, used to display notifications and requests, for downloading data over HTTP.
 
 You can get these using pip with the following commands:
