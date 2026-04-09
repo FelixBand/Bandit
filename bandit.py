@@ -604,7 +604,7 @@ def install_or_play():
 
         def task():
             if ask_install_path:
-                game_destination = ctk.filedialog.askdirectory()
+                game_destination = ctk.filedialog.askdirectory(initialdir=bandit_games_folder)
             else:
                 game_destination = bandit_games_folder
             success = download_tar(gameIDs[selected_game], game_destination)
@@ -665,7 +665,7 @@ def uninstall_game():
             f"Failed to uninstall the game. Error: {e}. Removing installation entry anyway."
         )
 
-    # Always run this part
+    # remove from installed_games.json
     installed_games.get(OS, {}).pop(game_id, None)
 
     with open(f"{bandit_program_data}/installed_games.json", "w") as f:
