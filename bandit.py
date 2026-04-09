@@ -36,6 +36,12 @@ if debug:
 else:
     OS = platform.system()
 
+total, used, free = shutil.disk_usage("/")
+# drive storage info
+print("Total: %d GiB" % (total // (2**30)))
+print("Used: %d GiB" % (used // (2**30)))
+print("Free: %d GiB" % (free // (2**30)))
+
 # App data locations
 if platform.system() == "Windows":
     bandit_userdata = f"{os.getenv('APPDATA')}/BanditGameLauncher"
@@ -123,14 +129,17 @@ try:
     open(f"{bandit_userdata}/settings.json", "r")
 except FileNotFoundError:
     with open(f"{bandit_userdata}/settings.json", "w") as f:
-        f.write('{"ask_install_path": false}')
+        f.write('{"Ask where to install games to": false}')
 
 # load and apply settings
-with open(f"{bandit_userdata}/settings.json", "r") as f:
-    settings = json.load(f)
-    ask_install_path = settings.get("ask_install_path", False)
+def apply_settings():
+    global ask_install_path
+    with open(f"{bandit_userdata}/settings.json", "r") as f:
+        settings = json.load(f)
+        ask_install_path = settings.get("Ask where to install games to", False)
+        print(settings)
 
-print(settings)
+apply_settings()
 
 installedGames = []
 
@@ -155,12 +164,45 @@ def refresh_installed_prereqs():
 refresh_installed_games()
 refresh_installed_prereqs()
 
+
+def tick_box(setting, value):
+    with open(f"{bandit_userdata}/settings.json", "r") as f:
+        settings = json.load(f)
+
+    settings[setting] = value  # update the changed setting
+
+    with open(f"{bandit_userdata}/settings.json", "w") as f:
+        json.dump(settings, f, indent=4)
+
+    print(f"{setting} set to {value}")
+
 def settings_clicked():
-    # Open new window
     settings_window = ctk.CTkToplevel(app)
     settings_window.title("Bandit Settings")
+    settings_window.protocol(
+        "WM_DELETE_WINDOW",
+        lambda: settings_closed(settings_window))
+    with open(f"{bandit_userdata}/settings.json", "r") as f:
+        settings = json.load(f)
+    vars = {}
+    for preference, value in settings.items():
+        var = tk.BooleanVar(value=value)
+        vars[preference] = var
 
-settingsButton = ctk.CTkButton(app, text="⚙️", command=settings_clicked)
+        checkbox = ctk.CTkCheckBox(
+            master=settings_window,
+            text=preference,
+            variable=var,
+            command=lambda p=preference, v=var: tick_box(p, v.get())
+        )
+        checkbox.pack(padx=20, pady=10)
+
+def settings_closed(window):
+    print('apply settings')
+    apply_settings()
+    window.destroy()
+
+settingsButton = ctk.CTkButton(app, text="⚙️", fg_color="#5F5F5F", command=settings_clicked)
 settingsButton.pack(pady=0, padx=0, anchor="ne")
 
 if OS == "Darwin":
@@ -562,7 +604,7 @@ def install_or_play():
 
         def task():
             if ask_install_path:
-                game_destination = tk.filedialog.askdirectory()
+                game_destination = ctk.filedialog.askdirectory()
             else:
                 game_destination = bandit_games_folder
             success = download_tar(gameIDs[selected_game], game_destination)
@@ -682,6 +724,5 @@ infoLabel.pack(pady=10, padx=20)
 progressBar = ctk.CTkProgressBar(app)
 progressBar.set(0)
 progressBar.pack(fill="x", expand=False, padx=20, pady=10)
-
 
 app.mainloop() # Up and away!
