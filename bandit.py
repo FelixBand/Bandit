@@ -36,12 +36,6 @@ if debug:
 else:
     OS = platform.system()
 
-total, used, free = shutil.disk_usage("/")
-# drive storage info
-print("Total: %d GiB" % (total // (2**30)))
-print("Used: %d GiB" % (used // (2**30)))
-print("Free: %d GiB" % (free // (2**30)))
-
 # App data locations
 if platform.system() == "Windows":
     bandit_userdata = f"{os.getenv('APPDATA')}/BanditGameLauncher"
@@ -322,6 +316,21 @@ currently_downloading_game = None
 
 selected_game = None
 
+def format_size(size_in_bytes):
+    if size_in_bytes != "Unknown":
+        try:
+            if size_in_bytes >= 1_000_000_000:
+                formatted_size = f"{size_in_bytes / 1_000_000_000:.2f} GB"
+            elif size_in_bytes >= 1_000_000:
+                formatted_size = f"{size_in_bytes / 1_000_000:.2f} MB"
+            elif size_in_bytes >= 1_000:
+                formatted_size = f"{size_in_bytes / 1_000:.2f} KB"
+            else:
+                formatted_size = f"{size_in_bytes} bytes"
+            return formatted_size
+        except ValueError:
+            pass
+
 def select_game(index):
     global selected_game
     global selected_game, prev_selected
@@ -363,21 +372,6 @@ def select_game(index):
 
     print(f"{selected_game}: name: {gameNames[selected_game]} id: {gameIDs[selected_game]} size: {gameSizes[selected_game]} multiplayer: {gameMPstatus[selected_game]}")
 
-    formatted_size = gameSizes[selected_game]
-    if formatted_size != "Unknown":
-        try:
-            size_bytes = int(formatted_size)
-            if size_bytes >= 1_000_000_000:
-                formatted_size = f"{size_bytes / 1_000_000_000:.2f} GB"
-            elif size_bytes >= 1_000_000:
-                formatted_size = f"{size_bytes / 1_000_000:.2f} MB"
-            elif size_bytes >= 1_000:
-                formatted_size = f"{size_bytes / 1_000:.2f} KB"
-            else:
-                formatted_size = f"{size_bytes} bytes"
-        except ValueError:
-            pass
-
     formatted_mp_status = "🔴 This game is singleplayer and/or has local multiplayer only."
     if gameMPstatus[selected_game] == "1":
         formatted_mp_status = "🟠 This supports LAN multiplayer."
@@ -386,7 +380,7 @@ def select_game(index):
     elif gameMPstatus[selected_game] == "3":
         formatted_mp_status = "🟩 This game supports online multiplayer with anyone."
 
-    gameInfoLabel.configure(text=f"{gameNames[selected_game]} — {formatted_size}\n{formatted_mp_status}")
+    gameInfoLabel.configure(text=f"{gameNames[selected_game]} — {format_size(int(gameSizes[selected_game]))}\n{formatted_mp_status}")
 
 def download_tar(game_id, destination = bandit_games_folder):
     global currently_downloading
@@ -607,6 +601,13 @@ def install_or_play():
                 game_destination = ctk.filedialog.askdirectory(initialdir=bandit_games_folder)
             else:
                 game_destination = bandit_games_folder
+
+            print(f'space left: {shutil.disk_usage(game_destination).free} vs game size: {int(gameSizes[selected_game])}')
+            if shutil.disk_usage(game_destination).free < int(gameSizes[selected_game]):
+                print('no space!')
+                if not tk.messagebox.askyesno("Not enough space!", f"This game is {format_size(int(gameSizes[selected_game]))} bytes big, and you only have {format_size(shutil.disk_usage(game_destination).free)} GB of space left!\nIn case this is wrong, would you like to continue downloading this game anyway?"):
+                    return
+
             success = download_tar(gameIDs[selected_game], game_destination)
 
             def after():
