@@ -118,6 +118,20 @@ except FileNotFoundError:
     with open(f"{bandit_userdata}/installed_prereqs.json", "w") as f:
         f.write('{}') # empty json object
 
+# SETTINGS!!!!!!!!!!!!!1
+try:
+    open(f"{bandit_userdata}/settings.json", "r")
+except FileNotFoundError:
+    with open(f"{bandit_userdata}/settings.json", "w") as f:
+        f.write('{"ask_install_path": false}')
+
+# load and apply settings
+with open(f"{bandit_userdata}/settings.json", "r") as f:
+    settings = json.load(f)
+    ask_install_path = settings.get("ask_install_path", False)
+
+print(settings)
+
 installedGames = []
 
 installedPrereqs = set()
@@ -140,6 +154,14 @@ def refresh_installed_prereqs():
 
 refresh_installed_games()
 refresh_installed_prereqs()
+
+def settings_clicked():
+    # Open new window
+    settings_window = ctk.CTkToplevel(app)
+    settings_window.title("Bandit Settings")
+
+settingsButton = ctk.CTkButton(app, text="⚙️", command=settings_clicked)
+settingsButton.pack(pady=0, padx=0, anchor="ne")
 
 if OS == "Darwin":
     fontSize = 18
@@ -212,7 +234,7 @@ def make_game_list():
             text=mpIcon + game_name,
             anchor="w",
             fg_color="transparent",
-            hover_color="#2a2a2a",
+            hover_color="#355486",
             command=lambda i=index: select_game(i),
             font=(listfont, fontSize)
         )
@@ -324,7 +346,7 @@ def select_game(index):
 
     gameInfoLabel.configure(text=f"{gameNames[selected_game]} — {formatted_size}\n{formatted_mp_status}")
 
-def download_game(game_id):
+def download_tar(game_id, destination = bandit_games_folder):
     global currently_downloading
     currently_downloading = True
 
@@ -408,7 +430,7 @@ def download_game(game_id):
             wrapped = ProgressFile(response.raw)
 
             with tarfile.open(fileobj=wrapped, mode="r|gz") as tar:
-                tar.extractall(path=bandit_games_folder)
+                tar.extractall(path=destination)
 
         print(f"\n{game_id} installed successfully.")
 
@@ -448,14 +470,16 @@ def download_game(game_id):
 
 
 def install_or_play():
+    # if currently downloading & selected curr downloading game, cancel
     global currently_downloading, currently_downloading_game
     if currently_downloading and selected_game == currently_downloading_game:
         currently_downloading = False
         print("Cancelling download...")
         if selected_game is not None:
             select_game(selected_game)
+    
+    # if selected game is installed, play!
     elif gameIDs[selected_game] in installedGames:
-        # play the game
         print(f'Launching {selected_game}!')
         # installation path from installed_games.json + executable path from executable_paths.json
         with open(f"{bandit_program_data}/installed_games.json", "r") as f:
@@ -537,7 +561,11 @@ def install_or_play():
         ipButton.configure(state="disabled")
 
         def task():
-            success = download_game(gameIDs[selected_game])
+            if ask_install_path:
+                game_destination = tk.filedialog.askdirectory()
+            else:
+                game_destination = bandit_games_folder
+            success = download_tar(gameIDs[selected_game], game_destination)
 
             def after():
                 ipButton.configure(state="normal")
@@ -547,7 +575,7 @@ def install_or_play():
                     with open(f"{bandit_program_data}/installed_games.json", "r") as f:
                         installed_games = json.load(f)
 
-                    installed_games[OS][gameIDs[currently_downloading_game]] = bandit_games_folder
+                    installed_games[OS][gameIDs[currently_downloading_game]] = game_destination
 
                     with open(f"{bandit_program_data}/installed_games.json", "w") as f:
                         json.dump(installed_games, f, indent=4)
@@ -587,36 +615,34 @@ def uninstall_game():
     if not tk.messagebox.askyesno("Confirm Uninstall", f"Are you sure you want to uninstall {gameNames[selected_game]}? This will delete: {full_game_path}"):
         return
     try:
-        shutil.rmtree(full_game_path) # remove the game's folder and all its contents
-        del installed_games[OS][game_id] # remove from installed_games.json
-        with open(f"{bandit_program_data}/installed_games.json", "w") as f:
-            json.dump(installed_games, f, indent=4)
-        # Also remove from installed_prereqs if present
-        with open(f"{bandit_userdata}/installed_prereqs.json", "r") as f:
-            prereqs = json.load(f)
-        if game_id in prereqs:
-            del prereqs[game_id]
-            with open(f"{bandit_userdata}/installed_prereqs.json", "w") as f:
-                json.dump(prereqs, f, indent=4)
-            refresh_installed_prereqs()
-        # refresh UI
-        refresh_installed_games()
-        update_game_list_colors()
-        infoLabel.configure(text="Game uninstalled successfully.")
+        shutil.rmtree(full_game_path)
         print(f'nuke successful. Deleted {full_game_path}')
     except Exception as e:
-        tk.messagebox.showerror("Error", f"Failed to uninstall the game. Error: {e}. Removing installation entry anyway.")
-        del installed_games[OS][game_id] # remove from installed_games.json anyway, since the game is probably already broken
-        with open(f"{bandit_program_data}/installed_games.json", "w") as f:
-            json.dump(installed_games, f, indent=4)
-        # Also remove from installed_prereqs if present
-        with open(f"{bandit_userdata}/installed_prereqs.json", "r") as f:
-            prereqs = json.load(f)
-        if game_id in prereqs:
-            del prereqs[game_id]
-            with open(f"{bandit_userdata}/installed_prereqs.json", "w") as f:
-                json.dump(prereqs, f, indent=4)
-            refresh_installed_prereqs()
+        tk.messagebox.showerror(
+            "Error",
+            f"Failed to uninstall the game. Error: {e}. Removing installation entry anyway."
+        )
+
+    # Always run this part
+    installed_games.get(OS, {}).pop(game_id, None)
+
+    with open(f"{bandit_program_data}/installed_games.json", "w") as f:
+        json.dump(installed_games, f, indent=4)
+
+    # Handle prereqs
+    with open(f"{bandit_userdata}/installed_prereqs.json", "r") as f:
+        prereqs = json.load(f)
+
+    if game_id in prereqs:
+        del prereqs[game_id]
+        with open(f"{bandit_userdata}/installed_prereqs.json", "w") as f:
+            json.dump(prereqs, f, indent=4)
+        refresh_installed_prereqs()
+
+    # refresh UI
+    refresh_installed_games()
+    update_game_list_colors()
+    infoLabel.configure(text="Game uninstalled successfully.")
 
     if selected_game is not None:
         select_game(selected_game)
