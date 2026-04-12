@@ -69,6 +69,7 @@ installedPrereqs = set()
 # Store per-item widgets so we can update their appearance later
 game_item_buttons = []
 installed_game_item_buttons = []
+installed_game_original_indices = []
 
 # App data locations
 if platform.system() == "Windows":
@@ -138,6 +139,7 @@ else:
 download_file(f"https://thuis.felixband.nl/bandit/{OS}/list.txt", bandit_userdata)
 download_file(f"https://thuis.felixband.nl/bandit/{OS}/executable_paths.json", bandit_userdata)
 download_file(f"https://thuis.felixband.nl/bandit/{OS}/prereq_paths.json", bandit_userdata)
+download_file(f"https://thuis.felixband.nl/bandit/{OS}/icon_paths.json", bandit_userdata)
 
 # if it doesn't exist, make local file to store installed games in
 try:
@@ -200,6 +202,7 @@ def make_installed_games_list():
     for btn in installed_game_item_buttons:
         btn.destroy()
     installed_game_item_buttons.clear()
+    installed_game_original_indices.clear()
 
     installed_items = []
 
@@ -223,6 +226,7 @@ def make_installed_games_list():
                 compound="left",
                 anchor="w",
                 fg_color="transparent",
+                text_color="white",
                 hover_color="#355486",
                 command=lambda i=index: select_game(i),
                 font=(listfont, fontSize)
@@ -233,12 +237,15 @@ def make_installed_games_list():
                 text=game_name,
                 anchor="w",
                 fg_color="transparent",
+                text_color="white",
                 hover_color="#355486",
                 command=lambda i=index: select_game(i),
                 font=(listfont, fontSize)
             )
         btn.pack(fill="x", pady=2, padx=4)
+        btn.bind("<Button-3>", lambda e, i=index: show_context_menu(e, i))
         installed_game_item_buttons.append(btn)
+        installed_game_original_indices.append(index)
 
 def refresh_installed_games():
     global installedGames
@@ -334,6 +341,7 @@ game_list_frame.bind_all("<Button-5>", lambda e: game_list_frame._parent_canvas.
 # Track selection index
 selected_game = None
 prev_selected = None
+prev_selected_installed = None
 
 for line in open(f"{bandit_userdata}/list.txt", "r").readlines():
     rawlist.append(line.strip()) # strip removes newline (\n) character, which you always want, duh??
@@ -388,6 +396,7 @@ def make_game_list():
                 font=(listfont, fontSize)
             )
         btn.pack(fill="x", pady=2, padx=4)
+        btn.bind("<Button-3>", lambda e, i=index: show_context_menu(e, i))
         game_item_buttons.append(btn)
 
         # set initial text color based on installed state
@@ -463,6 +472,23 @@ def select_game(index):
 
     prev_selected = selected_game
 
+    # Handle installed games list selection
+    try:
+        if prev_selected_installed is not None and 0 <= prev_selected_installed < len(installed_game_item_buttons):
+            installed_game_item_buttons[prev_selected_installed].configure(fg_color="transparent")
+    except Exception:
+        pass
+
+    if gameIDs[selected_game] in installedGames:
+        try:
+            installed_index = installed_game_original_indices.index(selected_game)
+            installed_game_item_buttons[installed_index].configure(fg_color="#444444")
+            prev_selected_installed = installed_index
+        except ValueError:
+            prev_selected_installed = None
+    else:
+        prev_selected_installed = None
+
     # update buttons depending on install/download state
     try:
         if gameIDs[selected_game] in installedGames:
@@ -493,6 +519,71 @@ def select_game(index):
         formatted_mp_status = "Online multiplayer with anyone supported."
 
     gameInfoLabel.configure(text=f"{gameNames[selected_game]} — {format_size(int(gameSizes[selected_game]))}\n{formatted_mp_status}")
+
+def show_context_menu(event, index):
+    menu = tk.Menu(app, tearoff=0)
+    menu.add_command(label="Browse file location", command=lambda: browse_location(index))
+    menu.add_command(label="Create desktop shortcut", command=lambda: create_shortcut(index))
+    menu.post(event.x_root, event.y_root)
+
+def browse_location(game_index):
+    if gameIDs[game_index] in installedGames:
+        with open(f"{bandit_program_data}/installed_games.json", "r") as f:
+            installed_games = json.load(f)
+        game_path = f"{installed_games[OS][gameIDs[game_index]]}/{get_first_folder_in_executable_path(gameIDs[game_index])}"
+        print(game_path)
+        if OS == "Windows":
+            subprocess.run(["explorer", game_path])
+        elif OS == "Darwin":
+            subprocess.run(["open", game_path])
+        else:
+            subprocess.run(["xdg-open", game_path])
+
+def create_shortcut(game_index):
+    if gameIDs[game_index] in installedGames:
+        with open(f"{bandit_program_data}/installed_games.json", "r") as f:
+            installed_games = json.load(f)
+        game_path = installed_games[OS][gameIDs[game_index]]
+        with open(f"{bandit_userdata}/executable_paths.json", "r") as f:
+            executable_paths = json.load(f)
+        exe_path = f"{game_path}/{executable_paths[gameIDs[game_index]]}"
+
+        icon_path = None
+        try:
+            with open(f"{bandit_userdata}/icon_paths.json", "r") as f:
+                icon_paths = json.load(f)
+            if gameIDs[game_index] in icon_paths:
+                icon_path = f"{game_path}/{get_first_folder_in_executable_path(gameIDs[game_index])}/{icon_paths[gameIDs[game_index]]}"
+        except:
+            pass
+
+        desktop_path = os.path.expanduser("~/Desktop")
+        if OS == "Windows":
+            # Create .lnk shortcut using PowerShell
+            shortcut_name = f"{gameNames[game_index]}.lnk"
+            shortcut_path = os.path.join(desktop_path, shortcut_name)
+            ps_command = f"$ws = New-Object -ComObject WScript.Shell; $s = $ws.CreateShortcut('{shortcut_path}'); $s.TargetPath = '{exe_path}';"
+            if icon_path:
+                ps_command += f" $s.IconLocation = '{icon_path}';"
+            ps_command += " $s.Save()"
+            subprocess.run(["powershell", "-Command", ps_command])
+        elif OS == "Darwin":
+            # Create alias using osascript
+            script = f'tell application "Finder" to make alias file to POSIX file "{exe_path}" at POSIX file "{desktop_path}"'
+            subprocess.run(["osascript", "-e", script])
+        else:
+            # Linux: create .desktop file
+            shortcut_name = f"{gameNames[game_index]}.desktop"
+            shortcut_path = os.path.join(desktop_path, shortcut_name)
+            desktop_content = f"""[Desktop Entry]
+Name={gameNames[game_index]}
+Exec="{exe_path}"
+Icon={icon_path or exe_path}
+Type=Application
+"""
+            with open(shortcut_path, 'w') as f:
+                f.write(desktop_content)
+            os.chmod(shortcut_path, 0o755)
 
 def download_tar(game_id, destination = bandit_games_folder):
     global currently_downloading
