@@ -539,51 +539,110 @@ def browse_location(game_index):
         else:
             subprocess.run(["xdg-open", game_path])
 
+def sanitize_filename(name):
+    return "".join(c for c in name if c.isalnum() or c in (' ', '-', '_')).rstrip()
+
+def resolve_icon_path(game_id, install_path):
+    try:
+        with open(f"{bandit_userdata}/icon_paths.json", "r") as f:
+            icon_paths = json.load(f)
+        if game_id in icon_paths:
+            icon_rel = icon_paths[game_id].lstrip('/')
+            return os.path.join(install_path, icon_rel)
+    except:
+        pass
+    return None
+
 def create_shortcut(game_index):
     if gameIDs[game_index] in installedGames:
-        with open(f"{bandit_program_data}/installed_games.json", "r") as f:
-            installed_games = json.load(f)
-        game_path = installed_games[OS][gameIDs[game_index]]
+        game_id = gameIDs[game_index]
+        display_name = gameNames[game_index]
+        safe_name = sanitize_filename(display_name)
+
+        # Resolve executable relative path and full path
         with open(f"{bandit_userdata}/executable_paths.json", "r") as f:
             executable_paths = json.load(f)
-        exe_path = f"{game_path}/{executable_paths[gameIDs[game_index]]}"
+        executable_relative_path = executable_paths.get(game_id, "")
+        with open(f"{bandit_program_data}/installed_games.json", "r") as f:
+            installed_games = json.load(f)
+        game_install_path = installed_games[OS][game_id]
+        game_exec_full_path = os.path.join(game_install_path, executable_relative_path) if executable_relative_path else game_install_path
+        game_exec_full_path = os.path.normpath(game_exec_full_path)
 
-        icon_path = None
+        icon_path = resolve_icon_path(game_id, game_install_path)
+
+        if not os.path.exists(game_exec_full_path):
+            tk.messagebox.showwarning("Executable Missing", f"Executable not found:\n{game_exec_full_path}")
+            return
+
+        desktop = os.path.expanduser("~/Desktop")
+        os.makedirs(desktop, exist_ok=True)
+
         try:
-            with open(f"{bandit_userdata}/icon_paths.json", "r") as f:
-                icon_paths = json.load(f)
-            if gameIDs[game_index] in icon_paths:
-                icon_path = f"{game_path}/{get_first_folder_in_executable_path(gameIDs[game_index])}/{icon_paths[gameIDs[game_index]]}"
-        except:
-            pass
+            if OS == "Windows":
+                # Prefer win32com if available to create a real .lnk
+                try:
+                    from win32com.client import Dispatch
+                    shortcut_path = os.path.join(desktop, f"{safe_name}.lnk")
+                    shell = Dispatch('WScript.Shell')
+                    shortcut = shell.CreateShortCut(shortcut_path)
+                    shortcut.Targetpath = game_exec_full_path
+                    shortcut.WorkingDirectory = os.path.dirname(game_exec_full_path)
+                    shortcut.IconLocation = icon_path if icon_path else game_exec_full_path
+                    shortcut.save()
+                except Exception:
+                    # Fallback to .url which also works as a clickable link
+                    url_path = os.path.join(desktop, f"{safe_name}.url")
+                    with open(url_path, "w", encoding="utf-8") as f:
+                        f.write("[InternetShortcut]\n")
+                        f.write("URL=file:///" + game_exec_full_path.replace("\\", "/") + "\n")
+                        icon_src = icon_path if icon_path else game_exec_full_path
+                        f.write("IconFile=" + icon_src + "\n")
+                        f.write("IconIndex=0\n")
 
-        desktop_path = os.path.expanduser("~/Desktop")
-        if OS == "Windows":
-            # Create .lnk shortcut using PowerShell
-            shortcut_name = f"{gameNames[game_index]}.lnk"
-            shortcut_path = os.path.join(desktop_path, shortcut_name)
-            ps_command = f"$ws = New-Object -ComObject WScript.Shell; $s = $ws.CreateShortcut('{shortcut_path}'); $s.TargetPath = '{exe_path}';"
-            if icon_path:
-                ps_command += f" $s.IconLocation = '{icon_path}';"
-            ps_command += " $s.Save()"
-            subprocess.run(["powershell", "-Command", ps_command])
-        elif OS == "Darwin":
-            # Create alias using osascript
-            script = f'tell application "Finder" to make alias file to POSIX file "{exe_path}" at POSIX file "{desktop_path}"'
-            subprocess.run(["osascript", "-e", script])
-        else:
-            # Linux: create .desktop file
-            shortcut_name = f"{gameNames[game_index]}.desktop"
-            shortcut_path = os.path.join(desktop_path, shortcut_name)
-            desktop_content = f"""[Desktop Entry]
-Name={gameNames[game_index]}
-Exec="{exe_path}"
-Icon={icon_path or exe_path}
-Type=Application
-"""
-            with open(shortcut_path, 'w') as f:
-                f.write(desktop_content)
-            os.chmod(shortcut_path, 0o755)
+            elif OS == "Darwin":
+                # Make a Finder alias using AppleScript
+                as_cmd = (
+                    f'tell application "Finder" to make alias file to '
+                    f'(POSIX file "{game_exec_full_path}") '
+                    f'at (POSIX file "{desktop}") '
+                    f'with properties {{name:"{safe_name}"}}'
+                )
+                subprocess.run(["osascript", "-e", as_cmd], check=False)
+
+                if icon_path:
+                    copy_icon_cmd = f'''
+                    set src to POSIX file "{icon_path}"
+                    set dst to POSIX file "{os.path.join(desktop, safe_name)}"
+                    tell application "Finder"
+                        set icon of dst to icon of src
+                    end tell
+                    '''
+                    subprocess.run(["osascript", "-e", copy_icon_cmd], check=False)
+
+            else:  # Linux
+                desktop_file = os.path.join(desktop, f"{safe_name}.desktop")
+                exec_cmd = f'"{game_exec_full_path}"'
+
+                desktop_entry = [
+                    "[Desktop Entry]",
+                    f"Name={display_name}",
+                    f"Exec={exec_cmd}",
+                    "Type=Application",
+                    f"Path={os.path.dirname(game_exec_full_path)}",
+                    f"Icon={icon_path if icon_path else os.path.splitext(game_exec_full_path)[0]}",
+                    "Terminal=false"
+                ]
+                with open(desktop_file, "w", encoding="utf-8") as f:
+                    f.write("\n".join(desktop_entry))
+                try:
+                    os.chmod(desktop_file, 0o755)
+                except Exception:
+                    pass
+
+            tk.messagebox.showinfo("Shortcut Created", f"Desktop shortcut created for {display_name}.")
+        except Exception as e:
+            tk.messagebox.showerror("Error", f"Failed to create shortcut: {e}")
 
 def download_tar(game_id, destination = bandit_games_folder):
     global currently_downloading
