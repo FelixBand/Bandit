@@ -47,8 +47,7 @@ def resource_path(relative_path):
 
     return os.path.join(base_path, relative_path)
 
-icon_path = resource_path("icon.png")
-app.iconphoto(True, ImageTk.PhotoImage(Image.open(icon_path)))
+app.iconphoto(True, ImageTk.PhotoImage(Image.open(resource_path("icon.png"))))
 
 if OS == "Windows":
     app.iconbitmap(resource_path("icon.ico"))
