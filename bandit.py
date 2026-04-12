@@ -10,6 +10,8 @@ import threading
 import shutil
 import time
 import base64
+from PIL import Image, ImageTk
+import sys
 
 app = ctk.CTk()
 
@@ -35,6 +37,26 @@ if debug:
     OS = "Windows"
 else:
     OS = platform.system()
+
+def resource_path(relative_path):
+    """ Get absolute path to resource (works for dev and PyInstaller) """
+    try:
+        base_path = sys._MEIPASS  # PyInstaller temp dir
+    except AttributeError:
+        base_path = os.path.abspath(".")
+
+    return os.path.join(base_path, relative_path)
+
+icon_path = resource_path("icon.png")
+
+icon_image = ImageTk.PhotoImage(Image.open(icon_path))
+app.iconphoto(True, icon_image)
+
+if OS == "Windows":
+    app.iconbitmap(resource_path("icon.ico"))
+
+# MP icon cache for asset images
+mp_icon_images = {}
 
 # some globals for later
 rawlist = []
@@ -151,11 +173,30 @@ def apply_settings():
 apply_settings()
 
 def get_mp_icon(status):
-    return {
-        "1": "🟠",
-        "2": "🟢",
-        "3": "🟩"
-    }.get(status, "🔴")
+    status = str(status) if status is not None else "0"
+    if status not in {"1", "2", "3"}:
+        status = "0"
+
+    if status in mp_icon_images:
+        return mp_icon_images[status]
+
+    icon_size = globals().get("fontSize", 14) + 20
+
+    for ext in ("svg", "png"):
+        icon_file = resource_path(f"assets/mp{status}.{ext}")
+        if os.path.exists(icon_file):
+            try:
+                img = Image.open(icon_file)
+                img = img.convert("RGBA")
+                img = img.resize((icon_size, icon_size), Image.LANCZOS)
+                photo = ImageTk.PhotoImage(img)
+                mp_icon_images[status] = photo
+                return photo
+            except Exception:
+                continue
+
+    mp_icon_images[status] = None
+    return None
 
 def make_installed_games_list():
     # clear old buttons
@@ -177,16 +218,28 @@ def make_installed_games_list():
     for game_name, game_id, index, mp_status in installed_items:
 
         mpIcon = get_mp_icon(mp_status)
-
-        btn = ctk.CTkButton(
-            installed_games_frame,
-            text=mpIcon + " " + game_name,
-            anchor="w",
-            fg_color="transparent",
-            hover_color="#355486",
-            command=lambda i=index: select_game(i),
-            font=(listfont, fontSize)
-        )
+        if isinstance(mpIcon, ImageTk.PhotoImage):
+            btn = ctk.CTkButton(
+                installed_games_frame,
+                text=game_name,
+                image=mpIcon,
+                compound="left",
+                anchor="w",
+                fg_color="transparent",
+                hover_color="#355486",
+                command=lambda i=index: select_game(i),
+                font=(listfont, fontSize)
+            )
+        else:
+            btn = ctk.CTkButton(
+                installed_games_frame,
+                text=game_name,
+                anchor="w",
+                fg_color="transparent",
+                hover_color="#355486",
+                command=lambda i=index: select_game(i),
+                font=(listfont, fontSize)
+            )
         btn.pack(fill="x", pady=2, padx=4)
         installed_game_item_buttons.append(btn)
 
@@ -315,15 +368,28 @@ def make_game_list():
     for index, game_name in enumerate(gameNames):
         mpIcon = get_mp_icon(gameMPstatus[index])
 
-        btn = ctk.CTkButton(
-            game_list_frame,
-            text=mpIcon + game_name,
-            anchor="w",
-            fg_color="transparent",
-            hover_color="#355486",
-            command=lambda i=index: select_game(i),
-            font=(listfont, fontSize)
-        )
+        if isinstance(mpIcon, ImageTk.PhotoImage):
+            btn = ctk.CTkButton(
+                game_list_frame,
+                text=game_name,
+                image=mpIcon,
+                compound="left",
+                anchor="w",
+                fg_color="transparent",
+                hover_color="#355486",
+                command=lambda i=index: select_game(i),
+                font=(listfont, fontSize)
+            )
+        else:
+            btn = ctk.CTkButton(
+                game_list_frame,
+                text=game_name,
+                anchor="w",
+                fg_color="transparent",
+                hover_color="#355486",
+                command=lambda i=index: select_game(i),
+                font=(listfont, fontSize)
+            )
         btn.pack(fill="x", pady=2, padx=4)
         game_item_buttons.append(btn)
 
@@ -421,13 +487,13 @@ def select_game(index):
 
     print(f"{selected_game}: name: {gameNames[selected_game]} id: {gameIDs[selected_game]} size: {gameSizes[selected_game]} multiplayer: {gameMPstatus[selected_game]}")
 
-    formatted_mp_status = "🔴 This game is singleplayer and/or has local multiplayer only."
+    formatted_mp_status = "Singleplayer or local multiplayer only."
     if gameMPstatus[selected_game] == "1":
-        formatted_mp_status = "🟠 This supports LAN multiplayer."
+        formatted_mp_status = "LAN multiplayer supported."
     elif gameMPstatus[selected_game] == "2":
-        formatted_mp_status = "🟢 This supports online multiplayer with other Bandit users."
+        formatted_mp_status = "Online multiplayer with other Bandit users supported."
     elif gameMPstatus[selected_game] == "3":
-        formatted_mp_status = "🟩 This game supports online multiplayer with anyone."
+        formatted_mp_status = "Online multiplayer with anyone supported."
 
     gameInfoLabel.configure(text=f"{gameNames[selected_game]} — {format_size(int(gameSizes[selected_game]))}\n{formatted_mp_status}")
 
