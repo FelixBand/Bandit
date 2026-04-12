@@ -532,12 +532,14 @@ def browse_location(game_index):
             installed_games = json.load(f)
         game_path = f"{installed_games[OS][gameIDs[game_index]]}/{get_first_folder_in_executable_path(gameIDs[game_index])}"
         print(game_path)
-        if OS == "Windows":
-            subprocess.run(["explorer", game_path])
-        elif OS == "Darwin":
-            subprocess.run(["open", game_path])
-        else:
-            subprocess.run(["xdg-open", game_path])
+
+        if os.path.exists(game_path):
+            if OS == "Windows":
+                os.startfile(game_path)
+            elif OS == "Darwin":
+                subprocess.run(["open", "-R", game_path])
+            elif OS == "Linux":
+                subprocess.run(["xdg-open", game_path])
 
 def sanitize_filename(name):
     return "".join(c for c in name if c.isalnum() or c in (' ', '-', '_')).rstrip()
