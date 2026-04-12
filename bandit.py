@@ -555,6 +555,39 @@ def resolve_icon_path(game_id, install_path):
         pass
     return None
 
+def get_desktop_path():
+    if OS == "Windows":
+        try:
+            from ctypes import wintypes, windll, create_unicode_buffer
+            CSIDL_DESKTOPDIRECTORY = 0x10
+            buf = create_unicode_buffer(wintypes.MAX_PATH)
+            windll.shell32.SHGetFolderPathW(None, CSIDL_DESKTOPDIRECTORY, None, 0, buf)
+            desktop = buf.value
+            if os.path.isdir(desktop):
+                return desktop
+        except Exception:
+            pass
+    return os.path.join(os.path.expanduser("~"), "Desktop")
+
+def remove_desktop_shortcut(display_name):
+    desktop = get_desktop_path()
+    safe_name = sanitize_filename(display_name)
+    candidates = []
+    if OS == "Windows":
+        candidates = [f"{safe_name}.lnk", f"{safe_name}.url", f"{display_name}.lnk", f"{display_name}.url"]
+    elif OS == "Darwin":
+        candidates = [safe_name, display_name]
+    else:
+        candidates = [f"{safe_name}.desktop", f"{display_name}.desktop"]
+
+    for candidate in candidates:
+        path = os.path.join(desktop, candidate)
+        try:
+            if os.path.exists(path):
+                os.remove(path)
+        except Exception:
+            pass
+
 def create_shortcut(game_index):
     if gameIDs[game_index] in installedGames:
         game_id = gameIDs[game_index]
@@ -577,7 +610,7 @@ def create_shortcut(game_index):
             tk.messagebox.showwarning("Executable Missing", f"Executable not found:\n{game_exec_full_path}")
             return
 
-        desktop = os.path.expanduser("~/Desktop")
+        desktop = get_desktop_path()
         os.makedirs(desktop, exist_ok=True)
 
         try:
@@ -660,6 +693,21 @@ def download_tar(game_id, destination = bandit_games_folder):
             downloaded = 0
             start_time = time.time()
 
+            last_ui_update = 0.0
+            last_ui_percent = -1
+
+            def should_update_ui(percent, now):
+                nonlocal last_ui_update, last_ui_percent
+                percent_int = int(percent)
+                if percent_int != last_ui_percent:
+                    last_ui_percent = percent_int
+                    last_ui_update = now
+                    return True
+                if now - last_ui_update >= 0.2:
+                    last_ui_update = now
+                    return True
+                return False
+
             class ProgressFile:
                 def __init__(self, raw):
                     self.raw = raw
@@ -680,24 +728,20 @@ def download_tar(game_id, destination = bandit_games_folder):
                         downloaded += len(data)
 
                         elapsed = time.time() - start_time
-                        speed = downloaded / max(elapsed, 0.001) # bytes/sec
+                        speed = downloaded / max(elapsed, 0.001)  # bytes/sec
 
                         if total_size:
                             percent = (downloaded / total_size) * 100
                             remaining = total_size - downloaded
                             eta = remaining / speed if speed > 0 else 0
 
-                            # Format speed
                             speed_kb = speed / 1024
                             speed_mb = speed_kb / 1024
-
-                            # Update the speed and ETA display every second, to avoid jittery UI updates
                             if speed_mb >= 1:
                                 speed_str = f"{speed_mb:.2f} MB/s"
                             else:
                                 speed_str = f"{speed_kb:.2f} KB/s"
 
-                            # Format ETA
                             if eta > 3600:
                                 eta_str = time.strftime("%H hour(s) and %M minutes remaining", time.gmtime(eta))
                             elif eta > 60:
@@ -710,15 +754,15 @@ def download_tar(game_id, destination = bandit_games_folder):
                                 end=""
                             )
 
-                            # safe UI update
-                            def update_ui():
-                                progressBar.set(percent/100)
-                                infoLabel.configure(
-                                    text=f"Downloading {gameNames[currently_downloading_game]}: {percent:.2f}%\n{speed_str} • ETA {eta_str}"
-                                )
+                            now = time.time()
+                            if should_update_ui(percent, now):
+                                def update_ui():
+                                    progressBar.set(percent/100)
+                                    infoLabel.configure(
+                                        text=f"Downloading {gameNames[currently_downloading_game]}: {percent:.2f}%\n{speed_str} • ETA {eta_str}"
+                                    )
 
-                            app.after(0, update_ui)
-
+                                app.after(0, update_ui)
                         else:
                             print(f"\rDownloading {game_id}: {downloaded} bytes", end="")
 
@@ -940,6 +984,9 @@ def uninstall_game():
             "Error",
             f"Failed to uninstall the game. Error: {e}. Removing installation entry anyway."
         )
+
+    # remove desktop shortcut if it exists
+    remove_desktop_shortcut(gameNames[selected_game])
 
     # remove from installed_games.json
     installed_games.get(OS, {}).pop(game_id, None)

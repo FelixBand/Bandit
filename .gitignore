@@ -10,3 +10,4 @@ saved_paths.json
 list.txt
 executable_paths.json
 prereq_paths.json
+__pycache__
