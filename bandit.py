@@ -36,6 +36,21 @@ if debug:
 else:
     OS = platform.system()
 
+# some globals for later
+rawlist = []
+gameNames = []
+gameIDs = []
+gameSizes = []
+gameMPstatus = []
+
+installedGames = []
+
+installedPrereqs = set()
+
+# Store per-item widgets so we can update their appearance later
+game_item_buttons = []
+installed_game_item_buttons = []
+
 # App data locations
 if platform.system() == "Windows":
     bandit_userdata = f"{os.getenv('APPDATA')}/BanditGameLauncher"
@@ -135,9 +150,45 @@ def apply_settings():
 
 apply_settings()
 
-installedGames = []
+def get_mp_icon(status):
+    return {
+        "1": "🟠",
+        "2": "🟢",
+        "3": "🟩"
+    }.get(status, "🔴")
 
-installedPrereqs = set()
+def make_installed_games_list():
+    # clear old buttons
+    for btn in installed_game_item_buttons:
+        btn.destroy()
+    installed_game_item_buttons.clear()
+
+    installed_items = []
+
+    for index, game_id in enumerate(gameIDs):
+        if game_id in installedGames:
+            installed_items.append(
+                (gameNames[index], game_id, index, gameMPstatus[index])
+            )
+
+    # sort alphabetically by name
+    installed_items.sort(key=lambda x: x[0].lower())
+
+    for game_name, game_id, index, mp_status in installed_items:
+
+        mpIcon = get_mp_icon(mp_status)
+
+        btn = ctk.CTkButton(
+            installed_games_frame,
+            text=mpIcon + " " + game_name,
+            anchor="w",
+            fg_color="transparent",
+            hover_color="#355486",
+            command=lambda i=index: select_game(i),
+            font=(listfont, fontSize)
+        )
+        btn.pack(fill="x", pady=2, padx=4)
+        installed_game_item_buttons.append(btn)
 
 def refresh_installed_games():
     global installedGames
@@ -147,6 +198,8 @@ def refresh_installed_games():
         for game_id in installed_games[OS]:
             installedGames.append(game_id)
 
+    make_installed_games_list() 
+
 def refresh_installed_prereqs():
     global installedPrereqs
     installedPrereqs = set()
@@ -154,10 +207,6 @@ def refresh_installed_prereqs():
         prereqs = json.load(f)
         for game_id in prereqs:
             installedPrereqs.add(game_id)
-
-refresh_installed_games()
-refresh_installed_prereqs()
-
 
 def tick_box(setting, value):
     with open(f"{bandit_userdata}/settings.json", "r") as f:
@@ -196,8 +245,10 @@ def settings_closed(window):
     apply_settings()
     window.destroy()
 
-settingsButton = ctk.CTkButton(app, text="⚙️", fg_color="#5F5F5F", command=settings_clicked)
-settingsButton.pack(pady=0, padx=0, anchor="ne")
+settingsButton = ctk.CTkButton(app,
+    text="⚙️", width=40, height=40, fg_color="#5F5F5F", command=settings_clicked)
+
+settingsButton.pack(pady=0, anchor="ne")
 
 if OS == "Darwin":
     fontSize = 18
@@ -211,21 +262,28 @@ else:
 
 # Game list: replace native Listbox with a CustomTkinter scrollable frame
 # Each game will be a selectable `CTkButton` inside the scrollable frame.
-game_list_frame = ctk.CTkScrollableFrame(app, corner_radius=6)
-game_list_frame.pack(fill="both", expand=True, padx=10, pady=10)
+tabview = ctk.CTkTabview(app)
+tabview.pack(fill="both", expand=True, padx=10, pady=10)
+tabview.add("All Games")
+tabview.add("Installed")
 
-# Store per-item widgets so we can update their appearance later
-game_item_buttons = []
+game_list_frame = ctk.CTkScrollableFrame(tabview.tab("All Games"))
+game_list_frame.pack(fill="both", expand=True)
+
+installed_games_frame = ctk.CTkScrollableFrame(tabview.tab("Installed"))
+installed_games_frame.pack(fill="both", expand=True)
+
+def _on_mousewheel(event):
+    game_list_frame._parent_canvas.yview_scroll(int(-1*(event.delta/120)), "units")
+
+# This shit is necessary to be able to scroll for some reason... Tk is kinda crappy
+game_list_frame.bind_all("<MouseWheel>", _on_mousewheel)  # Windows & macOS
+game_list_frame.bind_all("<Button-4>", lambda e: game_list_frame._parent_canvas.yview_scroll(-1, "units"))  # Linux scroll up
+game_list_frame.bind_all("<Button-5>", lambda e: game_list_frame._parent_canvas.yview_scroll(1, "units"))   # Linux scroll down
 
 # Track selection index
 selected_game = None
 prev_selected = None
-
-rawlist = []
-gameNames = []
-gameIDs = []
-gameSizes = []
-gameMPstatus = []
 
 for line in open(f"{bandit_userdata}/list.txt", "r").readlines():
     rawlist.append(line.strip()) # strip removes newline (\n) character, which you always want, duh??
@@ -244,7 +302,9 @@ for line in rawlist:
         gameMPstatus.append(line.split("|")[3].strip()) # STRIP to remove newline char otherwise chaos
     except IndexError:
         gameMPstatus.append("Unknown")
-    
+
+refresh_installed_games()
+refresh_installed_prereqs()
 
 def make_game_list():
     # clear any existing items
@@ -253,17 +313,7 @@ def make_game_list():
     game_item_buttons.clear()
 
     for index, game_name in enumerate(gameNames):
-        try:
-            if gameMPstatus[index] == "1":
-                mpIcon = "🟠"
-            elif gameMPstatus[index] == "2":
-                mpIcon = "🟢"
-            elif gameMPstatus[index] == "3":
-                mpIcon = "🟩"
-            else:
-                mpIcon = "🔴"
-        except IndexError:
-            mpIcon = "🔴"
+        mpIcon = get_mp_icon(gameMPstatus[index])
 
         btn = ctk.CTkButton(
             game_list_frame,
@@ -290,7 +340,6 @@ def make_game_list():
     # do one pass to ensure selection visuals are correct
     if selected_game is not None and 0 <= selected_game < len(game_item_buttons):
         game_item_buttons[selected_game].configure(fg_color="#444444")
-
 
 def update_game_list_colors():
     for index, game_id in enumerate(gameIDs):
@@ -725,5 +774,58 @@ infoLabel.pack(pady=10, padx=20)
 progressBar = ctk.CTkProgressBar(app)
 progressBar.set(0)
 progressBar.pack(fill="x", expand=False, padx=20, pady=10)
+
+search_buffer = ""
+last_key_time = 0
+
+def key_pressed(event):
+    global search_buffer, last_key_time
+
+    # Ignore modifier keys and non-printable characters
+    if not event.char or not event.char.isprintable():
+        return
+
+    current_time = time.time()
+    
+    # If it's been more than 1 second since the last keypress, reset the search buffer
+    if current_time - last_key_time > 1.0:
+        search_buffer = ""
+
+    search_buffer += event.char.lower()
+    last_key_time = current_time
+
+    current_tab = tabview.get()
+
+    if current_tab == "All Games":
+        for index, name in enumerate(gameNames):
+            if name.lower().startswith(search_buffer):
+                select_game(index)
+                
+                # Scroll to the selected item (calculate percentage down the list)
+                fraction = index / max(1, len(gameNames))
+                game_list_frame._parent_canvas.yview_moveto(fraction)
+                break
+                
+    elif current_tab == "Installed":
+        # Reconstruct the sorted installed games list to match visual order
+        installed_data = []
+        for idx, gid in enumerate(gameIDs):
+            if gid in installedGames:
+                installed_data.append((gameNames[idx], idx))
+                
+        # Sort exactly how make_installed_games_list() does
+        installed_data.sort(key=lambda x: x[0].lower())
+
+        for visual_index, (name, original_index) in enumerate(installed_data):
+            if name.lower().startswith(search_buffer):
+                select_game(original_index)
+                
+                # Scroll to the selected item based on its position in the Installed tab
+                fraction = visual_index / max(1, len(installed_data))
+                installed_games_frame._parent_canvas.yview_moveto(fraction)
+                break
+
+# Bind all key presses on the app window to the handler
+app.bind_all("<Key>", key_pressed)
 
 app.mainloop() # Up and away!
