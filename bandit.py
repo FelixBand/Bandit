@@ -274,7 +274,7 @@ installed_games_frame = ctk.CTkScrollableFrame(tabview.tab("Installed"))
 installed_games_frame.pack(fill="both", expand=True)
 
 def _on_mousewheel(event):
-    game_list_frame._parent_canvas.yview_scroll(int(-1*(event.delta/120)), "units")
+    game_list_frame._parent_canvas.yview_scroll(int(-1*(event.delta/1)), "units")
 
 # This shit is necessary to be able to scroll for some reason... Tk is kinda crappy
 game_list_frame.bind_all("<MouseWheel>", _on_mousewheel)  # Windows & macOS
@@ -641,13 +641,21 @@ def install_or_play():
                 tk.messagebox.showerror("Error", f"Failed to launch the game. Error: {e}")
     else:
         # install the game
+        currently_downloading = True
         currently_downloading_game = selected_game
         print(f"Installing {selected_game}")
         ipButton.configure(state="disabled")
 
         def task():
+            global currently_downloading, currently_downloading_game
+
             if ask_install_path:
                 game_destination = ctk.filedialog.askdirectory(initialdir=bandit_games_folder)
+                if not game_destination:
+                    currently_downloading = False
+                    currently_downloading_game = None
+                    app.after(0, lambda: select_game(selected_game))
+                    return
             else:
                 game_destination = bandit_games_folder
 
@@ -655,6 +663,9 @@ def install_or_play():
             if shutil.disk_usage(game_destination).free < int(gameSizes[selected_game]):
                 print('no space!')
                 if not tk.messagebox.askyesno("Not enough space!", f"This game is {format_size(int(gameSizes[selected_game]))} bytes big, and you only have {format_size(shutil.disk_usage(game_destination).free)} GB of space left!\nIn case this is wrong, would you like to continue downloading this game anyway?"):
+                    currently_downloading = False
+                    currently_downloading_game = None
+                    app.after(0, lambda: select_game(selected_game))
                     return
 
             success = download_tar(gameIDs[selected_game], game_destination)
