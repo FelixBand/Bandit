@@ -8,6 +8,7 @@ import subprocess
 import tarfile
 import threading
 import shutil
+import tempfile
 import time
 import base64
 from PIL import Image, ImageTk
@@ -64,6 +65,9 @@ gameMPstatus = []
 
 installedGames = []
 
+linux_game_ids = set()
+windows_game_ids = set()
+
 installedPrereqs = set()
 
 # Store per-item widgets so we can update their appearance later
@@ -105,11 +109,15 @@ elif platform.system() == "Linux":
     if not os.path.exists(bandit_program_data):
         print('create')
         # visual sudo prompt using pkexec. combine two commands so the user doesn't have to enter their password twice
-        subprocess.run(["pkexec", "sh", "-c", f"mkdir {bandit_program_data} && mkdir {os.path.join(bandit_program_data, 'Games')} && chmod 777 {bandit_program_data} && chmod 777 {os.path.join(bandit_program_data, 'Games')}"])
+        subprocess.run(["pkexec", "sh", "-c", f"mkdir {bandit_program_data} && mkdir {os.path.join(bandit_program_data, 'Games')} && mkdir {os.path.join(bandit_program_data, 'Windows')} && chmod 777 {bandit_program_data} && chmod 777 {os.path.join(bandit_program_data, 'Games')} && chmod 777 {os.path.join(bandit_program_data, 'Windows')}"])
         # if fails, exit
         if not os.path.exists(bandit_program_data):
             print("Failed to create system-wide folder. Please run this program as root or with sudo.")
             exit(1)
+
+    pfxhome = f"{os.path.expanduser('~')}/.banditpfx/drive_c/users/steamuser"
+    if not os.path.exists(f"{os.path.expanduser('~')}/.banditpfx"):
+        subprocess.run(["sh", "-c", f"mkdir -p {os.path.expanduser('~')}/.banditpfx/drive_c/users/steamuser/AppData && ln -s {pfxhome}/AppData {os.path.expanduser('~')} &&ln -s {os.path.expanduser('~')}/Downloads {pfxhome} && ln -s {os.path.expanduser('~')}/Documents {pfxhome} && ln -s {os.path.expanduser('~')}/Desktop {pfxhome} && ln -s {os.path.expanduser('~')}/Music {pfxhome} && ln -s {os.path.expanduser('~')}/Pictures {pfxhome} && ln -s {os.path.expanduser('~')}/Videos {pfxhome}"])
 elif platform.system() == "Darwin":
     bandit_program_data = "/Library/Application Support/BanditGameLauncher"
 
@@ -136,10 +144,16 @@ else:
     bandit_games_folder = os.path.join(bandit_program_data, "Games")
 
 # Download necessary files!    
-download_file(f"https://thuis.felixband.nl/bandit/{OS}/list.txt", bandit_userdata)
-download_file(f"https://thuis.felixband.nl/bandit/{OS}/executable_paths.json", bandit_userdata)
-download_file(f"https://thuis.felixband.nl/bandit/{OS}/prereq_paths.json", bandit_userdata)
-download_file(f"https://thuis.felixband.nl/bandit/{OS}/icon_paths.json", bandit_userdata)
+download_file(f"https://thuis.felixband.nl/bandit/{OS}/list.txt", bandit_program_data)
+download_file(f"https://thuis.felixband.nl/bandit/{OS}/executable_paths.json", bandit_program_data)
+download_file(f"https://thuis.felixband.nl/bandit/{OS}/prereq_paths.json", bandit_program_data)
+download_file(f"https://thuis.felixband.nl/bandit/{OS}/icon_paths.json", bandit_program_data)
+
+if OS == "Linux":
+    download_file(f"https://thuis.felixband.nl/bandit/Windows/list.txt", os.path.join(bandit_program_data, 'Windows'))
+    download_file(f"https://thuis.felixband.nl/bandit/Windows/executable_paths.json", os.path.join(bandit_program_data, 'Windows'))
+    download_file(f"https://thuis.felixband.nl/bandit/Windows/prereq_paths.json", os.path.join(bandit_program_data, 'Windows'))
+    download_file(f"https://thuis.felixband.nl/bandit/Windows/icon_paths.json", os.path.join(bandit_program_data, 'Windows'))
 
 # if it doesn't exist, make local file to store installed games in
 try:
@@ -252,10 +266,15 @@ def refresh_installed_games():
     installedGames = [] # Reset the list so we don't append to old data
     with open(f"{bandit_program_data}/installed_games.json", "r") as f:
         installed_games = json.load(f)
-        for game_id in installed_games[OS]:
+        for game_id in installed_games.get(OS, {}):
             installedGames.append(game_id)
 
-    make_installed_games_list() 
+        if OS == "Linux":
+            for game_id in installed_games.get("Windows", {}):
+                if game_id not in installedGames:
+                    installedGames.append(game_id)
+
+    make_installed_games_list()
 
 def refresh_installed_prereqs():
     global installedPrereqs
@@ -264,6 +283,442 @@ def refresh_installed_prereqs():
         prereqs = json.load(f)
         for game_id in prereqs:
             installedPrereqs.add(game_id)
+
+
+def get_installed_game_info(game_id):
+    with open(f"{bandit_program_data}/installed_games.json", "r") as f:
+        installed_games = json.load(f)
+
+    if game_id in installed_games.get(OS, {}):
+        return OS, installed_games[OS][game_id]
+
+    if OS == "Linux":
+        if game_id in installed_games.get("Windows", {}):
+            return "Windows", installed_games["Windows"][game_id]
+        if game_id in installed_games.get("Darwin", {}):
+            return "Darwin", installed_games["Darwin"][game_id]
+
+    return None, None
+
+
+def get_executable_json_path(section=None):
+    if section == "Windows" and OS == "Linux":
+        return os.path.join(bandit_program_data, "Windows", "executable_paths.json")
+    return os.path.join(bandit_program_data, "executable_paths.json")
+
+
+def get_prereq_json_path(section=None):
+    if section == "Windows" and OS == "Linux":
+        return os.path.join(bandit_program_data, "Windows", "prereq_paths.json")
+    return os.path.join(bandit_program_data, "prereq_paths.json")
+
+
+def get_icon_json_path(section=None):
+    if section == "Windows" and OS == "Linux":
+        return os.path.join(bandit_program_data, "Windows", "icon_paths.json")
+    return os.path.join(bandit_program_data, "icon_paths.json")
+
+
+def get_first_folder_in_executable_path(game_id, section=None):
+    with open(get_executable_json_path(section), "r") as f:
+        executable_paths = json.load(f)
+        exec_path = executable_paths[game_id]
+        first_folder = exec_path.split("/")[0]
+        return first_folder
+
+
+def resolve_icon_path(game_id, install_path, section=None):
+    try:
+        with open(get_icon_json_path(section), "r") as f:
+            icon_paths = json.load(f)
+        if game_id in icon_paths:
+            icon_rel = icon_paths[game_id].lstrip('/')
+            return os.path.join(install_path, icon_rel)
+    except Exception:
+        pass
+    return None
+
+
+def _download_tar_from_response(response, destination, display_name):
+    total_size = int(response.headers.get("Content-Length", 0))
+    downloaded = 0
+    start_time = time.time()
+
+    last_ui_update = 0.0
+    last_ui_percent = -1
+
+    def should_update_ui(percent, now):
+        nonlocal last_ui_update, last_ui_percent
+        percent_int = int(percent)
+        if percent_int != last_ui_percent:
+            last_ui_percent = percent_int
+            last_ui_update = now
+            return True
+        if now - last_ui_update >= 0.2:
+            last_ui_update = now
+            return True
+        return False
+
+    class ProgressFile:
+        def __init__(self, raw):
+            self.raw = raw
+
+        def read(self, size=-1):
+            nonlocal downloaded
+            global currently_downloading
+
+            if not currently_downloading:
+                raise Exception("Download cancelled")
+
+            data = self.raw.read(size)
+
+            if not currently_downloading:
+                raise Exception("Download cancelled")
+
+            if data:
+                downloaded += len(data)
+
+                elapsed = time.time() - start_time
+                speed = downloaded / max(elapsed, 0.001)
+
+                if total_size:
+                    percent = (downloaded / total_size) * 100
+                    remaining = total_size - downloaded
+                    eta = remaining / speed if speed > 0 else 0
+
+                    speed_kb = speed / 1024
+                    speed_mb = speed_kb / 1024
+                    if speed_mb >= 1:
+                        speed_str = f"{speed_mb:.2f} MB/s"
+                    else:
+                        speed_str = f"{speed_kb:.2f} KB/s"
+
+                    if eta > 3600:
+                        eta_str = time.strftime("%H hour(s) and %M minutes remaining", time.gmtime(eta))
+                    elif eta > 60:
+                        eta_str = time.strftime(str(int(eta / 60)) + " minute(s) remaining", time.gmtime(eta))
+                    else:
+                        eta_str = time.strftime("Less than a minute remaining", time.gmtime(eta))
+
+                    print(
+                        f"\rDownloading {display_name}: {percent:.2f}% | {speed_str} | ETA: {eta_str}",
+                        end=""
+                    )
+
+                    now = time.time()
+                    if should_update_ui(percent, now):
+                        def update_ui():
+                            progressBar.set(percent / 100)
+                            infoLabel.configure(
+                                text=f"Downloading {display_name}: {percent:.2f}%\n{speed_str} • ETA {eta_str}"
+                            )
+
+                        app.after(0, update_ui)
+                else:
+                    print(f"\rDownloading {display_name}: {downloaded} bytes", end="")
+
+            return data
+
+        def readable(self):
+            return True
+
+    wrapped = ProgressFile(response.raw)
+    with tarfile.open(fileobj=wrapped, mode="r|gz") as tar:
+        tar.extractall(path=destination)
+
+    print(f"\n{display_name} installed successfully.")
+
+    def finish_ui():
+        progressBar.set(0)
+        infoLabel.configure(text="Download complete!")
+
+    app.after(0, finish_ui)
+    return True
+
+
+def download_tar_url(url, destination, display_name="download"):
+    global currently_downloading
+    currently_downloading = True
+
+    try:
+        with requests.get(url, stream=True, timeout=10) as response:
+            response.raise_for_status()
+            return _download_tar_from_response(response, destination, display_name)
+    except Exception as e:
+        if str(e) == "Download cancelled":
+            print("\nDownload cancelled.")
+
+            def cancel_ui():
+                progressBar.set(0)
+                infoLabel.configure(text="Download cancelled.")
+
+            app.after(0, cancel_ui)
+            return False
+        else:
+            print(f"\nFailed to install {display_name}: {e}")
+
+            def fail_ui():
+                progressBar.set(0)
+                infoLabel.configure(text="Download failed.")
+
+            app.after(0, fail_ui)
+            return False
+    finally:
+        currently_downloading = False
+
+
+def get_latest_proton_ge_tarball_url():
+    api_url = "https://api.github.com/repos/GloriousEggroll/proton-ge-custom/releases/latest"
+    response = requests.get(api_url, timeout=10)
+    response.raise_for_status()
+    release = response.json()
+
+    for asset in release.get("assets", []):
+        name = asset.get("name", "")
+        if name.endswith(".tar.gz"):
+            return asset.get("browser_download_url")
+
+    raise Exception("No Proton-GE tar.gz asset found on the latest release.")
+
+
+def extract_tarball_to_fixed_folder(response, destination, fixed_name):
+    with tempfile.TemporaryDirectory() as temp_dir:
+        wrapped = response.raw
+        with tarfile.open(fileobj=wrapped, mode="r|gz") as tar:
+            tar.extractall(path=temp_dir)
+            members = [m.name for m in tar.getmembers() if m.name and not m.name.startswith(".")]
+
+        root_parts = [m.split("/", 1)[0] for m in members if "/" in m]
+        root_dirs = [p for p in sorted(set(root_parts)) if p]
+
+        if len(root_dirs) == 1:
+            src_dir = os.path.join(temp_dir, root_dirs[0])
+        else:
+            src_dir = temp_dir
+
+        target_dir = os.path.join(destination, fixed_name)
+        if os.path.exists(target_dir):
+            shutil.rmtree(target_dir)
+        os.makedirs(target_dir, exist_ok=True)
+
+        for item in os.listdir(src_dir):
+            shutil.move(os.path.join(src_dir, item), os.path.join(target_dir, item))
+
+    return target_dir
+
+
+def download_proton_ge(destination=None):
+    destination = destination or bandit_program_data
+    url = get_latest_proton_ge_tarball_url()
+
+    global currently_downloading
+    currently_downloading = True
+
+    try:
+        with requests.get(url, stream=True, timeout=10) as response:
+            response.raise_for_status()
+
+            total_size = int(response.headers.get("Content-Length", 0))
+            downloaded = 0
+            start_time = time.time()
+
+            last_ui_update = 0.0
+            last_ui_percent = -1
+
+            def should_update_ui(percent, now):
+                nonlocal last_ui_update, last_ui_percent
+                percent_int = int(percent)
+                if percent_int != last_ui_percent:
+                    last_ui_percent = percent_int
+                    last_ui_update = now
+                    return True
+                if now - last_ui_update >= 0.2:
+                    last_ui_update = now
+                    return True
+                return False
+
+            class ProgressFile:
+                def __init__(self, raw):
+                    self.raw = raw
+
+                def read(self, size=-1):
+                    nonlocal downloaded
+                    global currently_downloading
+
+                    if not currently_downloading:
+                        raise Exception("Download cancelled")
+
+                    data = self.raw.read(size)
+
+                    if not currently_downloading:
+                        raise Exception("Download cancelled")
+
+                    if data:
+                        downloaded += len(data)
+
+                        elapsed = time.time() - start_time
+                        speed = downloaded / max(elapsed, 0.001)
+
+                        if total_size:
+                            percent = (downloaded / total_size) * 100
+                            remaining = total_size - downloaded
+                            eta = remaining / speed if speed > 0 else 0
+
+                            speed_kb = speed / 1024
+                            speed_mb = speed_kb / 1024
+                            if speed_mb >= 1:
+                                speed_str = f"{speed_mb:.2f} MB/s"
+                            else:
+                                speed_str = f"{speed_kb:.2f} KB/s"
+
+                            if eta > 3600:
+                                eta_str = time.strftime("%H hour(s) and %M minutes remaining", time.gmtime(eta))
+                            elif eta > 60:
+                                eta_str = time.strftime(str(int(eta / 60)) + " minute(s) remaining", time.gmtime(eta))
+                            else:
+                                eta_str = time.strftime("Less than a minute remaining", time.gmtime(eta))
+
+                            print(
+                                f"\rDownloading Proton-GE: {percent:.2f}% | {speed_str} | ETA: {eta_str}",
+                                end=""
+                            )
+
+                            now = time.time()
+                            if should_update_ui(percent, now):
+                                def update_ui():
+                                    progressBar.set(percent / 100)
+                                    infoLabel.configure(
+                                        text=f"Downloading Proton-GE: {percent:.2f}%\n{speed_str} • ETA {eta_str}"
+                                    )
+
+                                app.after(0, update_ui)
+                        else:
+                            print(f"\rDownloading Proton-GE: {downloaded} bytes", end="")
+
+                    return data
+
+                def readable(self):
+                    return True
+
+            wrapped = ProgressFile(response.raw)
+            with tarfile.open(fileobj=wrapped, mode="r|gz") as tar:
+                with tempfile.TemporaryDirectory() as temp_dir:
+                    tar.extractall(path=temp_dir)
+                    members = [m.name for m in tar.getmembers() if m.name and not m.name.startswith(".")]
+
+                    root_parts = [m.split("/", 1)[0] for m in members if "/" in m]
+                    root_dirs = [p for p in sorted(set(root_parts)) if p]
+
+                    if len(root_dirs) == 1:
+                        src_dir = os.path.join(temp_dir, root_dirs[0])
+                    else:
+                        src_dir = temp_dir
+
+                    target_dir = os.path.join(destination, "Proton-GE")
+                    if os.path.exists(target_dir):
+                        shutil.rmtree(target_dir)
+                    os.makedirs(target_dir, exist_ok=True)
+
+                    for item in os.listdir(src_dir):
+                        shutil.move(os.path.join(src_dir, item), os.path.join(target_dir, item))
+
+        print("\nProton-GE installed successfully.")
+
+        def finish_ui():
+            progressBar.set(0)
+            infoLabel.configure(text="Proton-GE download complete!")
+
+        app.after(0, finish_ui)
+        return True
+    except Exception as e:
+        if str(e) == "Download cancelled":
+            print("\nDownload cancelled.")
+
+            def cancel_ui():
+                progressBar.set(0)
+                infoLabel.configure(text="Download cancelled.")
+
+            app.after(0, cancel_ui)
+            return False
+        else:
+            print(f"\nFailed to install Proton-GE: {e}")
+
+            def fail_ui():
+                progressBar.set(0)
+                infoLabel.configure(text="Download failed.")
+
+            app.after(0, fail_ui)
+            return False
+    finally:
+        currently_downloading = False
+
+
+def find_proton_binary():
+    proton_dir = os.path.join(bandit_program_data, "Proton-GE")
+    candidates = [
+        os.path.join(proton_dir, "proton"),
+        os.path.join(proton_dir, "dist", "proton"),
+        os.path.join(proton_dir, "bin", "proton")
+    ]
+    for candidate in candidates:
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+    return None
+
+
+def ensure_proton_installed():
+    global currently_downloading, currently_downloading_game
+
+    if find_proton_binary():
+        return True
+
+    if currently_downloading:
+        tk.messagebox.showinfo(
+            "Download in progress",
+            "Please wait until the current download is complete before launching a Windows game."
+        )
+        return False
+
+    if not tk.messagebox.askyesno(
+        "Download Proton-GE?",
+        "This game requires Proton-GE to run on Linux. Download the latest Proton-GE release now?"
+    ):
+        return False
+
+    def proton_task():
+        global currently_downloading, currently_downloading_game
+        currently_downloading_game = None
+        download_proton_ge()
+        if selected_game is not None:
+            app.after(0, lambda: select_game(selected_game))
+
+    threading.Thread(target=proton_task, daemon=True).start()
+    return False
+
+
+def run_with_proton(executable_path, working_dir):
+    proton_binary = find_proton_binary()
+    if not proton_binary:
+        if not ensure_proton_installed():
+            return False
+        proton_binary = find_proton_binary()
+        if not proton_binary:
+            tk.messagebox.showerror("Error", "Unable to locate the Proton-GE binary after download.")
+            return False
+
+    env = os.environ.copy()
+    compat_path = os.path.expanduser("~/.banditpfx")
+    env["STEAM_COMPAT_DATA_PATH"] = compat_path
+    env["STEAM_COMPAT_CLIENT_INSTALL_PATH"] = compat_path
+    env["WINEDLLOVERRIDES"] = "dinput8,winhttp,winmm=n,b"
+
+    try:
+        subprocess.Popen([proton_binary, "run", executable_path], cwd=working_dir, env=env)
+        return True
+    except Exception as e:
+        tk.messagebox.showerror("Error", f"Failed to launch with Proton: {e}")
+        return False
+
 
 def tick_box(setting, value):
     with open(f"{bandit_userdata}/settings.json", "r") as f:
@@ -343,10 +798,37 @@ selected_game = None
 prev_selected = None
 prev_selected_installed = None
 
-for line in open(f"{bandit_userdata}/list.txt", "r").readlines():
-    rawlist.append(line.strip()) # strip removes newline (\n) character, which you always want, duh??
-    # here I turn the raw .txt file into an array.
-rawlist.sort() # Sort alphabetically
+if OS == "Linux":
+    seen_ids = set()
+    # Load Linux games
+    with open(f"{bandit_program_data}/list.txt", "r") as f:
+        for line in f:
+            line = line.strip()
+            game_id = line.split("|")[1]
+
+            rawlist.append(line)
+            seen_ids.add(game_id)
+            linux_game_ids.add(game_id)
+
+    # Load Windows games
+    with open(f"{bandit_program_data}/Windows/list.txt", "r") as f:
+        for line in f:
+            line = line.strip()
+            game_id = line.split("|")[1]
+
+            windows_game_ids.add(game_id)
+            # only add if not already present
+            if game_id not in seen_ids:
+                rawlist.append(line)
+                seen_ids.add(game_id)
+
+    # sort alphabetically by game name
+    rawlist.sort(key=lambda x: x.split("|")[0].lower())
+else: # Do it normally
+    for line in open(f"{bandit_program_data}/list.txt", "r").readlines():
+        rawlist.append(line.strip()) # strip removes newline (\n) character, which you always want, duh??
+        # here I turn the raw .txt file into an array.
+    rawlist.sort() # Sort alphabetically
 
 for line in rawlist:
     gameNames.append(line.split("|")[0])
@@ -528,9 +1010,10 @@ def show_context_menu(event, index):
 
 def browse_location(game_index):
     if gameIDs[game_index] in installedGames:
-        with open(f"{bandit_program_data}/installed_games.json", "r") as f:
-            installed_games = json.load(f)
-        game_path = f"{installed_games[OS][gameIDs[game_index]]}/{get_first_folder_in_executable_path(gameIDs[game_index])}"
+        section, install_path = get_installed_game_info(gameIDs[game_index])
+        if not section or not install_path:
+            return
+        game_path = f"{install_path}/{get_first_folder_in_executable_path(gameIDs[game_index], section)}"
         print(game_path)
 
         if os.path.exists(game_path):
@@ -544,16 +1027,7 @@ def browse_location(game_index):
 def sanitize_filename(name):
     return "".join(c for c in name if c.isalnum() or c in (' ', '-', '_')).rstrip()
 
-def resolve_icon_path(game_id, install_path):
-    try:
-        with open(f"{bandit_userdata}/icon_paths.json", "r") as f:
-            icon_paths = json.load(f)
-        if game_id in icon_paths:
-            icon_rel = icon_paths[game_id].lstrip('/')
-            return os.path.join(install_path, icon_rel)
-    except:
-        pass
-    return None
+# NOTE: resolve_icon_path is defined earlier with support for Windows section files.
 
 def get_desktop_path():
     if OS == "Windows":
@@ -594,17 +1068,19 @@ def create_shortcut(game_index):
         display_name = gameNames[game_index]
         safe_name = sanitize_filename(display_name)
 
+        section, game_install_path = get_installed_game_info(game_id)
+        if not section or not game_install_path:
+            tk.messagebox.showerror("Error", "Could not find installation information for this game.")
+            return
+
         # Resolve executable relative path and full path
-        with open(f"{bandit_userdata}/executable_paths.json", "r") as f:
+        with open(get_executable_json_path(section), "r") as f:
             executable_paths = json.load(f)
         executable_relative_path = executable_paths.get(game_id, "")
-        with open(f"{bandit_program_data}/installed_games.json", "r") as f:
-            installed_games = json.load(f)
-        game_install_path = installed_games[OS][game_id]
         game_exec_full_path = os.path.join(game_install_path, executable_relative_path) if executable_relative_path else game_install_path
         game_exec_full_path = os.path.normpath(game_exec_full_path)
 
-        icon_path = resolve_icon_path(game_id, game_install_path)
+        icon_path = resolve_icon_path(game_id, game_install_path, section)
 
         if not os.path.exists(game_exec_full_path):
             tk.messagebox.showwarning("Executable Missing", f"Executable not found:\n{game_exec_full_path}")
@@ -679,138 +1155,15 @@ def create_shortcut(game_index):
         except Exception as e:
             tk.messagebox.showerror("Error", f"Failed to create shortcut: {e}")
 
-def download_tar(game_id, destination = bandit_games_folder):
-    global currently_downloading
-    currently_downloading = True
-
-    url = f"https://thuis.felixband.nl/bandit/{OS}/{game_id}.tar.gz"
-
-    try:
-        with requests.get(url, stream=True, timeout=10) as response:
-            response.raise_for_status()
-
-            total_size = int(response.headers.get("Content-Length", 0))
-            downloaded = 0
-            start_time = time.time()
-
-            last_ui_update = 0.0
-            last_ui_percent = -1
-
-            def should_update_ui(percent, now):
-                nonlocal last_ui_update, last_ui_percent
-                percent_int = int(percent)
-                if percent_int != last_ui_percent:
-                    last_ui_percent = percent_int
-                    last_ui_update = now
-                    return True
-                if now - last_ui_update >= 0.2:
-                    last_ui_update = now
-                    return True
-                return False
-
-            class ProgressFile:
-                def __init__(self, raw):
-                    self.raw = raw
-
-                def read(self, size=-1):
-                    nonlocal downloaded
-                    global currently_downloading
-
-                    if not currently_downloading:
-                        raise Exception("Download cancelled")
-
-                    data = self.raw.read(size)
-
-                    if not currently_downloading:
-                        raise Exception("Download cancelled")
-
-                    if data:
-                        downloaded += len(data)
-
-                        elapsed = time.time() - start_time
-                        speed = downloaded / max(elapsed, 0.001)  # bytes/sec
-
-                        if total_size:
-                            percent = (downloaded / total_size) * 100
-                            remaining = total_size - downloaded
-                            eta = remaining / speed if speed > 0 else 0
-
-                            speed_kb = speed / 1024
-                            speed_mb = speed_kb / 1024
-                            if speed_mb >= 1:
-                                speed_str = f"{speed_mb:.2f} MB/s"
-                            else:
-                                speed_str = f"{speed_kb:.2f} KB/s"
-
-                            if eta > 3600:
-                                eta_str = time.strftime("%H hour(s) and %M minutes remaining", time.gmtime(eta))
-                            elif eta > 60:
-                                eta_str = time.strftime(str(int(eta / 60)) + " minute(s) remaining", time.gmtime(eta))
-                            else:
-                                eta_str = time.strftime("Less than a minute remaining", time.gmtime(eta))
-
-                            print(
-                                f"\rDownloading {game_id}: {percent:.2f}% | {speed_str} | ETA: {eta_str}",
-                                end=""
-                            )
-
-                            now = time.time()
-                            if should_update_ui(percent, now):
-                                def update_ui():
-                                    progressBar.set(percent/100)
-                                    infoLabel.configure(
-                                        text=f"Downloading {gameNames[currently_downloading_game]}: {percent:.2f}%\n{speed_str} • ETA {eta_str}"
-                                    )
-
-                                app.after(0, update_ui)
-                        else:
-                            print(f"\rDownloading {game_id}: {downloaded} bytes", end="")
-
-                    return data
-
-                def readable(self):
-                    return True
-
-            wrapped = ProgressFile(response.raw)
-
-            with tarfile.open(fileobj=wrapped, mode="r|gz") as tar:
-                tar.extractall(path=destination)
-
-        print(f"\n{game_id} installed successfully.")
-
-        # Reset UI after success
-        def finish_ui():
-            progressBar.set(0)
-            infoLabel.configure(text="Download complete!")
-        
-        app.after(0, finish_ui)
-
-        return True
-
-    except Exception as e:
-        if str(e) == "Download cancelled":
-            print("\nDownload cancelled.")
-
-            def cancel_ui():
-                progressBar.set(0)
-                infoLabel.configure(text="Download cancelled.")
-
-            app.after(0, cancel_ui)
-
-            return False
-        else:
-            print(f"\nFailed to install {game_id}: {e}")
-
-            def fail_ui():
-                progressBar.set(0)
-                infoLabel.configure(text="Download failed.")
-
-            app.after(0, fail_ui)
-
-            return False
-
-    finally:
-        currently_downloading = False        
+def download_tar(game_id, destination = bandit_games_folder, source_os=None):
+    source_os = source_os or OS
+    url = f"https://thuis.felixband.nl/bandit/{source_os}/{game_id}.tar.gz"
+    display_name = None
+    if currently_downloading_game is not None and 0 <= currently_downloading_game < len(gameNames):
+        display_name = gameNames[currently_downloading_game]
+    else:
+        display_name = game_id
+    return download_tar_url(url, destination, display_name)
 
 
 def install_or_play():
@@ -825,22 +1178,23 @@ def install_or_play():
     # if selected game is installed, play!
     elif gameIDs[selected_game] in installedGames:
         print(f'Launching {selected_game}!')
-        # installation path from installed_games.json + executable path from executable_paths.json
-        with open(f"{bandit_program_data}/installed_games.json", "r") as f:
-            installed_games = json.load(f)
-            game_path = installed_games[OS][gameIDs[selected_game]]
-        with open(f"{bandit_userdata}/executable_paths.json", "r") as f:
+        section, install_path = get_installed_game_info(gameIDs[selected_game])
+        if not section or not install_path:
+            tk.messagebox.showerror("Error", "Unable to locate the installed game path.")
+            return
+
+        with open(get_executable_json_path(section), "r") as f:
             executable_paths = json.load(f)
-            game_path = f"{game_path}/{executable_paths[gameIDs[selected_game]]}"
+            game_path = f"{install_path}/{executable_paths[gameIDs[selected_game]]}"
 
             # Install prerequisites
-            with open(f"{bandit_userdata}/prereq_paths.json", "r") as f:
+            with open(get_prereq_json_path(section), "r") as f:
                 prereq_paths = json.load(f)
                 if gameIDs[selected_game] in prereq_paths and gameIDs[selected_game] not in installedPrereqs:
                     install_commands = []
                     for prereq in prereq_paths[gameIDs[selected_game]]:
                         # Normalize the path
-                        full_path = os.path.normpath(f"{installed_games[OS][gameIDs[selected_game]]}/{get_first_folder_in_executable_path(gameIDs[selected_game])}/{prereq['path']}")
+                        full_path = os.path.normpath(f"{install_path}/{get_first_folder_in_executable_path(gameIDs[selected_game], section)}/{prereq['path']}")
                         
                         # Run the prerequisite directly in PowerShell
                         if prereq["command"]:
@@ -894,6 +1248,12 @@ def install_or_play():
                 # RUN GAME
                 if OS == "Darwin":
                     subprocess.Popen(["open", game_path], cwd=os.path.dirname(game_path))
+                elif OS == "Linux" and section == "Windows":
+                    if not ensure_proton_installed():
+                        return
+                    if run_with_proton(game_path, os.path.dirname(game_path)):
+                        return
+                    tk.messagebox.showerror("Error", "Failed to run the Windows game with Proton.")
                 else:
                     subprocess.Popen(game_path, cwd=os.path.dirname(game_path))
             except Exception as e:
@@ -904,6 +1264,19 @@ def install_or_play():
         currently_downloading_game = selected_game
         print(f"Installing {selected_game}")
         ipButton.configure(state="disabled")
+
+        install_source_os = OS
+        if OS == "Linux":
+            game_id = gameIDs[selected_game]
+            if game_id in windows_game_ids and game_id not in linux_game_ids:
+                install_source_os = "Windows"
+            elif game_id in linux_game_ids and game_id in windows_game_ids:
+                print("There is a Linux AND Windows version of this game.")
+                if not tk.messagebox.askyesno(
+                    "Which version?",
+                    "This game has a Linux AND a Windows version. Which one would you prefer to install?\n\nYes = Native Linux version (recommended)\nNo = Windows version (requires Proton)"
+                ):
+                    install_source_os = "Windows"
 
         def task():
             global currently_downloading, currently_downloading_game
@@ -927,7 +1300,7 @@ def install_or_play():
                     app.after(0, lambda: select_game(selected_game))
                     return
 
-            success = download_tar(gameIDs[selected_game], game_destination)
+            success = download_tar(gameIDs[selected_game], game_destination, source_os=install_source_os)
 
             def after():
                 ipButton.configure(state="normal")
@@ -937,7 +1310,9 @@ def install_or_play():
                     with open(f"{bandit_program_data}/installed_games.json", "r") as f:
                         installed_games = json.load(f)
 
-                    installed_games[OS][gameIDs[currently_downloading_game]] = game_destination
+                    if install_source_os not in installed_games:
+                        installed_games[install_source_os] = {}
+                    installed_games[install_source_os][gameIDs[currently_downloading_game]] = game_destination
 
                     with open(f"{bandit_program_data}/installed_games.json", "w") as f:
                         json.dump(installed_games, f, indent=4)
@@ -959,20 +1334,15 @@ def install_or_play():
         if selected_game is not None:
             select_game(selected_game)
 
-def get_first_folder_in_executable_path(game_id):
-    with open(f"{bandit_userdata}/executable_paths.json", "r") as f:
-        executable_paths = json.load(f)
-        exec_path = executable_paths[game_id]
-        first_folder = exec_path.split("/")[0] # get the first folder in the path
-        return first_folder
-
-
 def uninstall_game():
     print('gonna nuke')
-    with open(f"{bandit_program_data}/installed_games.json", "r") as f:
-        installed_games = json.load(f)
     game_id = gameIDs[selected_game]
-    full_game_path = os.path.join(installed_games[OS][game_id], get_first_folder_in_executable_path(game_id))
+    section, install_path = get_installed_game_info(game_id)
+    if not section or not install_path:
+        tk.messagebox.showerror("Error", "Could not find installation information for this game.")
+        return
+
+    full_game_path = os.path.join(install_path, get_first_folder_in_executable_path(game_id, section))
     # Ask for confirmation
     if not tk.messagebox.askyesno("Confirm Uninstall", f"Are you sure you want to uninstall {gameNames[selected_game]}? This will delete: {full_game_path}"):
         return
@@ -988,8 +1358,10 @@ def uninstall_game():
     # remove desktop shortcut if it exists
     remove_desktop_shortcut(gameNames[selected_game])
 
-    # remove from installed_games.json
-    installed_games.get(OS, {}).pop(game_id, None)
+    with open(f"{bandit_program_data}/installed_games.json", "r") as f:
+        installed_games = json.load(f)
+
+    installed_games.get(section, {}).pop(game_id, None)
 
     with open(f"{bandit_program_data}/installed_games.json", "w") as f:
         json.dump(installed_games, f, indent=4)
