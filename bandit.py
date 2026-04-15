@@ -164,7 +164,11 @@ if OS == "Linux":
 # migrate old saved_paths.json to new installed_games.json if needed
 
 if OS == "Windows":
-    old_saved_paths = os.path.join(f"{os.getenv('APPDATA')}/saved_paths.json")
+    old_saved_paths = os.path.join(f"{os.getenv('APPDATA')}/BanditGameLauncher/saved_paths.json")
+elif OS == "Darwin":
+    old_saved_paths = os.path.join(f"{os.path.expanduser('~')}/Library/Application Support/BanditGameLauncher/saved_paths.json")
+elif OS == "Linux":
+    old_saved_paths = os.path.join(f"{os.path.expanduser('~')}/.config/banditgamelauncher/saved_paths.json")
 
 legacy_saved_paths = os.path.join(os.path.dirname(os.path.abspath(__file__)), "saved_paths.json")
 installed_games_path = os.path.join(bandit_program_data, "installed_games.json")
