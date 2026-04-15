@@ -53,7 +53,11 @@ if os.path.exists("icon.png"):
     app.iconphoto(True, ImageTk.PhotoImage(Image.open(resource_path("icon.png"))))
 
 if OS == "Windows":
-    app.iconbitmap(resource_path("icon.ico"))
+    try:
+        app.iconbitmap(resource_path("icon.ico"))
+    except Exception:
+        pass
+    
 
 # MP icon cache for asset images
 mp_icon_images = {}
