@@ -2,7 +2,7 @@ dist
 build
 Bandit.spec
 .DS_Store
-Compiled Installer
+Compiled Setup
 Thumbs.db
 sign
 bandit.py
