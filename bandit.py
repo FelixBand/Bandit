@@ -1587,7 +1587,7 @@ uninstallButton.configure(state="disabled")
 # Info label for download speed, percentage and ETA.
 infoLabel = ctk.CTkLabel(app,
     text="",
-    font=("Courier", 12),
+    font=("Courier", 18),
     anchor="w",
 )
 infoLabel.pack(pady=10, padx=20)
