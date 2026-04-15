@@ -161,11 +161,31 @@ if OS == "Linux":
     download_file(f"https://thuis.felixband.nl/bandit/Windows/prereq_paths.json", os.path.join(bandit_program_data, 'Windows'))
     download_file(f"https://thuis.felixband.nl/bandit/Windows/icon_paths.json", os.path.join(bandit_program_data, 'Windows'))
 
+# migrate old saved_paths.json to new installed_games.json if needed
+
+if OS == "Windows":
+    old_saved_paths = os.path.join(f"{os.getenv('APPDATA')}/saved_paths.json")
+
+legacy_saved_paths = os.path.join(os.path.dirname(os.path.abspath(__file__)), "saved_paths.json")
+installed_games_path = os.path.join(bandit_program_data, "installed_games.json")
+
+for old_path in (old_saved_paths, legacy_saved_paths):
+    if os.path.exists(old_path) and not os.path.exists(installed_games_path):
+        try:
+            with open(old_path, "r") as f:
+                saved_paths = json.load(f)
+            with open(installed_games_path, "w") as f:
+                json.dump(saved_paths, f, indent=2)
+            print(f"Migrated old saved paths from {old_path} to {installed_games_path}")
+        except Exception as e:
+            print(f"Warning: failed to migrate old saved paths from {old_path}: {e}")
+        break
+
 # if it doesn't exist, make local file to store installed games in
 try:
-    open(f"{bandit_program_data}/installed_games.json", "r")
+    open(installed_games_path, "r")
 except FileNotFoundError:
-    with open(f"{bandit_program_data}/installed_games.json", "w") as f:
+    with open(installed_games_path, "w") as f:
         f.write('{"Windows": {}, "Linux": {}, "Darwin": {}}')
 
 try:
