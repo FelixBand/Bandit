@@ -13,6 +13,7 @@ import time
 import base64
 from PIL import Image, ImageTk
 import sys
+import webbrowser
 
 app = ctk.CTk()
 
@@ -1571,5 +1572,23 @@ def key_pressed(event):
 
 # Bind all key presses on the app window to the handler
 app.bind_all("<Key>", key_pressed)
+
+def check_for_updates():
+    try:
+        response = requests.get("https://api.github.com/repos/FelixBand/Bandit/releases/latest", timeout=10)
+        response.raise_for_status()
+        json_data = response.json()
+        if json_data["tag_name"] > version:
+
+            if tk.messagebox.askyesno('Download update?', "A new update is available: " + json_data["tag_name"] + ". You're running version " + version + ". Would you like to update?"):
+                try:
+                    webbrowser.open("https://github.com/FelixBand/Bandit/releases/latest", new=2)
+                    exit()
+                except Exception:
+                    pass
+    except Exception as e:
+        print(f"An error occurred while checking for updates: {e}")
+
+check_for_updates()
 
 app.mainloop() # Up and away!
