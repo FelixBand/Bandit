@@ -11,3 +11,5 @@ list.txt
 executable_paths.json
 prereq_paths.json
 __pycache__
+compile.sh
+compile.bat
