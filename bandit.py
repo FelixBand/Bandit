@@ -206,13 +206,23 @@ def send_telemetry(event_type, game_id=None, game_name=None):
                 telemetry_data["game_id"] = game_id
             if game_name:
                 telemetry_data["game_name"] = game_name
-            
-            response = requests.post(
-                "http://192.168.178.102:5001/api/telemetry",
-                json=telemetry_data,
-                timeout=5
-            )
-            print(f"[TELEMETRY] Sent {event_type} - Status: {response.status_code}")
+
+            endpoints = [
+                "https://thuis.felixband.nl/api/telemetry",
+                "http://thuis.felixband.nl:5001/api/telemetry"
+            ]
+
+            for url in endpoints:
+                try:
+                    response = requests.post(url, json=telemetry_data, timeout=5)
+                    print(f"[TELEMETRY] Tried {url} - Status: {response.status_code}")
+                    if response.status_code == 200:
+                        return
+                except Exception as e:
+                    print(f"[TELEMETRY] Endpoint failed: {url} -> {type(e).__name__}: {e}")
+                    continue
+
+            print(f"[TELEMETRY ERROR] All telemetry endpoints failed for {event_type}")
         except Exception as e:
             print(f"[TELEMETRY ERROR] Failed to send {event_type}: {type(e).__name__}: {e}")
             import traceback
