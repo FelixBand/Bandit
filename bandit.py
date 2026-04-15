@@ -187,6 +187,39 @@ def apply_settings():
 
 apply_settings()
 
+def send_telemetry(event_type, game_id=None, game_name=None):
+    """Send telemetry event to the telemetry server (non-blocking)"""
+    def task():
+        try:
+            with open(f"{bandit_userdata}/settings.json", "r") as f:
+                settings = json.load(f)
+            
+            if not settings.get("Enable Telemetry", True):
+                return
+            
+            telemetry_data = {
+                "event_type": event_type,
+                "username": os.getenv("USER", os.getenv("USERNAME", "unknown")),
+                "app_version": version,
+            }
+            if game_id:
+                telemetry_data["game_id"] = game_id
+            if game_name:
+                telemetry_data["game_name"] = game_name
+            
+            response = requests.post(
+                "http://192.168.178.102:5001/api/telemetry",
+                json=telemetry_data,
+                timeout=5
+            )
+            print(f"[TELEMETRY] Sent {event_type} - Status: {response.status_code}")
+        except Exception as e:
+            print(f"[TELEMETRY ERROR] Failed to send {event_type}: {type(e).__name__}: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    threading.Thread(target=task, daemon=True).start()
+
 def show_telemetry_disclaimer():
     """Show telemetry disclaimer on first launch"""
     with open(f"{bandit_userdata}/settings.json", "r") as f:
@@ -646,6 +679,7 @@ def download_proton_ge(destination=None):
                         shutil.move(os.path.join(src_dir, item), os.path.join(target_dir, item))
 
         print("\nProton-GE installed successfully.")
+        send_telemetry("proton_ge_installed")
 
         def finish_ui():
             progressBar.set(0)
@@ -1376,10 +1410,12 @@ def install_or_play():
                     if not ensure_proton_installed():
                         return
                     if run_with_proton(game_path, os.path.dirname(game_path)):
+                        send_telemetry("game_launched", game_id=gameIDs[selected_game], game_name=gameNames[selected_game])
                         return
                     tk.messagebox.showerror("Error", "Failed to run the Windows game with Proton.")
                 else:
                     subprocess.Popen(game_path, cwd=os.path.dirname(game_path))
+                send_telemetry("game_launched", game_id=gameIDs[selected_game], game_name=gameNames[selected_game])
             except Exception as e:
                 tk.messagebox.showerror("Error", f"Failed to launch the game. Error: {e}")
     else:
@@ -1446,6 +1482,7 @@ def install_or_play():
                     update_game_list_colors()
                     if selected_game is not None:
                         select_game(selected_game)
+                    send_telemetry("game_installed", game_id=gameIDs[currently_downloading_game], game_name=gameNames[currently_downloading_game])
                     currently_downloading = False
                 else:
                     print("Failed to install the game for some reason")
@@ -1503,6 +1540,7 @@ def uninstall_game():
     # refresh UI
     refresh_installed_games()
     update_game_list_colors()
+    send_telemetry("game_uninstalled", game_id=game_id, game_name=gameNames[selected_game])
     infoLabel.configure(text="Game uninstalled successfully.")
 
     if selected_game is not None:
