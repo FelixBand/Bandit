@@ -175,7 +175,7 @@ try:
     open(f"{bandit_userdata}/settings.json", "r")
 except FileNotFoundError:
     with open(f"{bandit_userdata}/settings.json", "w") as f:
-        f.write('{"Ask where to install games to": false}')
+        f.write('{"Ask where to install games to": false, "Enable Telemetry": true, "_first_launch": true}')
 
 # load and apply settings
 def apply_settings():
@@ -186,6 +186,27 @@ def apply_settings():
         print(settings)
 
 apply_settings()
+
+def show_telemetry_disclaimer():
+    """Show telemetry disclaimer on first launch"""
+    with open(f"{bandit_userdata}/settings.json", "r") as f:
+        settings = json.load(f)
+    
+    if settings.get("_first_launch", False):
+        result = tk.messagebox.showinfo(
+            "Telemetry Notice",
+            "Bandit collects anonymized telemetry data including:\n"
+            "• Your PC username\n"
+            "• Your IP address\n"
+            "• Which games you download\n\n"
+            "This helps me understand usage patterns.\n\n"
+            "You can disable this anytime in Settings ⚙️"
+        )
+        
+        # Mark first launch as complete
+        settings["_first_launch"] = False
+        with open(f"{bandit_userdata}/settings.json", "w") as f:
+            json.dump(settings, f, indent=4)
 
 def get_mp_icon(status):
     status = str(status) if status is not None else "0"
@@ -743,6 +764,9 @@ def settings_clicked():
         settings = json.load(f)
     vars = {}
     for preference, value in settings.items():
+        # Skip internal flags (starting with _)
+        if preference.startswith("_"):
+            continue
         var = tk.BooleanVar(value=value)
         vars[preference] = var
 
@@ -1590,5 +1614,7 @@ def check_for_updates():
         print(f"An error occurred while checking for updates: {e}")
 
 check_for_updates()
+
+show_telemetry_disclaimer()
 
 app.mainloop() # Up and away!
