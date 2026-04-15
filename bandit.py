@@ -48,8 +48,10 @@ def resource_path(relative_path):
 
     return os.path.join(base_path, relative_path)
 
-if OS == "Windows":
+if os.path.exists("icon.png"):
     app.iconphoto(True, ImageTk.PhotoImage(Image.open(resource_path("icon.png"))))
+
+if OS == "Windows":
     app.iconbitmap(resource_path("icon.ico"))
 
 # MP icon cache for asset images
