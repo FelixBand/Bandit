@@ -977,6 +977,8 @@ def select_game(index):
             ipButton.configure(text="Play")
             ipButton.configure(state="normal")
             uninstallButton.configure(state="normal")
+            if currently_downloading and selected_game != currently_downloading_game:
+                ipButton.configure(state="disabled")
         else:
             ipButton.configure(text="Install")
             uninstallButton.configure(state="disabled")
@@ -1005,8 +1007,97 @@ def select_game(index):
 def show_context_menu(event, index):
     menu = tk.Menu(app, tearoff=0)
     menu.add_command(label="Browse file location", command=lambda: browse_location(index))
+    menu.add_command(label="Move game", command=lambda: move_game(index))
     menu.add_command(label="Create desktop shortcut", command=lambda: create_shortcut(index))
     menu.post(event.x_root, event.y_root)
+
+
+def move_game(game_index):
+    global currently_downloading
+
+    game_id = gameIDs[game_index]
+    if game_id not in installedGames:
+        tk.messagebox.showerror("Move Game", "This game is not installed.")
+        return
+
+    if currently_downloading:
+        tk.messagebox.showinfo(
+            "Busy",
+            "Please wait until the current download or move is complete before moving a game."
+        )
+        return
+
+    section, install_path = get_installed_game_info(game_id)
+    if not section or not install_path:
+        tk.messagebox.showerror("Move Game", "Could not determine the current install location.")
+        return
+
+    game_folder = get_first_folder_in_executable_path(game_id, section)
+    source_path = os.path.normpath(os.path.join(install_path, game_folder))
+    if not os.path.exists(source_path):
+        tk.messagebox.showerror("Move Game", f"Game folder not found:\n{source_path}")
+        return
+
+    target_parent = ctk.filedialog.askdirectory(initialdir=install_path)
+    if not target_parent:
+        return
+
+    target_parent = os.path.normpath(target_parent)
+    if os.path.abspath(target_parent) == os.path.abspath(install_path):
+        tk.messagebox.showinfo("Move Game", "The game is already located in that folder.")
+        return
+
+    target_path = os.path.join(target_parent, os.path.basename(source_path))
+    if os.path.exists(target_path):
+        if not tk.messagebox.askyesno(
+            "Move Game",
+            f"A folder named '{os.path.basename(source_path)}' already exists in the destination. Replace it?"
+        ):
+            return
+        try:
+            shutil.rmtree(target_path)
+        except Exception as e:
+            tk.messagebox.showerror("Move Game", f"Failed to remove existing destination folder:\n{e}")
+            return
+
+    currently_downloading = True
+    progressBar.set(0)
+    infoLabel.configure(text=f"Moving {gameNames[game_index]}...")
+
+    def task():
+        try:
+            shutil.move(source_path, target_parent)
+            with open(f"{bandit_program_data}/installed_games.json", "r") as f:
+                installed_games = json.load(f)
+            if section not in installed_games:
+                installed_games[section] = {}
+            installed_games[section][game_id] = target_parent
+            with open(f"{bandit_program_data}/installed_games.json", "w") as f:
+                json.dump(installed_games, f, indent=4)
+
+            def done_ui():
+                progressBar.set(1)
+                infoLabel.configure(text=f"Moved {gameNames[game_index]} successfully.")
+                refresh_installed_games()
+                update_game_list_colors()
+                if selected_game is not None:
+                    select_game(selected_game)
+
+            app.after(0, done_ui)
+        except Exception as e:
+            def fail_ui():
+                infoLabel.configure(text=f"Failed to move game: {e}")
+                refresh_installed_games()
+                update_game_list_colors()
+                if selected_game is not None:
+                    select_game(selected_game)
+            app.after(0, fail_ui)
+        finally:
+            global currently_downloading
+            currently_downloading = False
+
+    threading.Thread(target=task, daemon=True).start()
+
 
 def browse_location(game_index):
     if gameIDs[game_index] in installedGames:
@@ -1174,6 +1265,13 @@ def install_or_play():
         print("Cancelling download...")
         if selected_game is not None:
             select_game(selected_game)
+        return
+    if currently_downloading and selected_game != currently_downloading_game:
+        tk.messagebox.showinfo(
+            "Busy",
+            "Please wait until the current download or move is complete."
+        )
+        return
     
     # if selected game is installed, play!
     elif gameIDs[selected_game] in installedGames:
