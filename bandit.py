@@ -123,7 +123,7 @@ elif platform.system() == "Linux":
 
     pfxhome = f"{os.path.expanduser('~')}/.banditpfx/pfx/drive_c/users/steamuser"
     if not os.path.exists(f"{os.path.expanduser('~')}/.banditpfx"):
-        subprocess.run(["sh", "-c", f"mkdir -p {os.path.expanduser('~')}/.banditpfx/pfx/drive_c/users/steamuser/AppData && ln -s {pfxhome}/AppData {os.path.expanduser('~')} &&ln -s {os.path.expanduser('~')}/Downloads {pfxhome} && ln -s {os.path.expanduser('~')}/Documents {pfxhome} && ln -s {os.path.expanduser('~')}/Desktop {pfxhome} && ln -s {os.path.expanduser('~')}/Music {pfxhome} && ln -s {os.path.expanduser('~')}/Pictures {pfxhome} && ln -s {os.path.expanduser('~')}/Videos {pfxhome}"])
+        subprocess.run(["sh", "-c", f"mkdir -p {pfxhome}/AppData && ln -s {pfxhome}/AppData {os.path.expanduser('~')} &&ln -s {os.path.expanduser('~')}/Downloads {pfxhome} && ln -s {os.path.expanduser('~')}/Documents {pfxhome} && ln -s {os.path.expanduser('~')}/Desktop {pfxhome} && ln -s {os.path.expanduser('~')}/Music {pfxhome} && ln -s {os.path.expanduser('~')}/Pictures {pfxhome} && ln -s {os.path.expanduser('~')}/Videos {pfxhome}"])
 elif platform.system() == "Darwin":
     bandit_program_data = "/Library/Application Support/BanditGameLauncher"
 
