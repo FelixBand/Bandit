@@ -23,7 +23,7 @@ DefaultDirName={autopf}\{#MyAppName}
 DisableProgramGroupPage=yes
 ; Remove the following line to run in administrative install mode (install for all users.)
 OutputDir=Compiled Setup
-OutputBaseFilename=Bandit Setup
+OutputBaseFilename=Bandit-Windows-setup
 SetupIconFile=icon.ico
 Compression=lzma/ultra64
 SolidCompression=yes
