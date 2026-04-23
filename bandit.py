@@ -865,7 +865,7 @@ settingsButton.pack(pady=0, anchor="ne")
 if OS == "Darwin":
     fontSize = 18
 else:
-    fontSize = 14
+    fontSize = 12
 
 if OS == "Windows":
     listfont = "Segoe UI"
