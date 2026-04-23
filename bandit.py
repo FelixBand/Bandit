@@ -1452,7 +1452,7 @@ def install_or_play():
                         return
                     tk.messagebox.showerror("Error", "Failed to run the Windows game with Proton.")
                 else:
-                    subprocess.Popen(game_path, cwd=os.path.dirname(game_path))
+                    subprocess.Popen(game_path, cwd=os.path.dirname(game_path), shell=True)
                 send_telemetry("game_launched", game_id=gameIDs[selected_game], game_name=gameNames[selected_game])
             except Exception as e:
                 tk.messagebox.showerror("Error", f"Failed to launch the game. Error: {e}")
