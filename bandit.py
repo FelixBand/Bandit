@@ -1077,8 +1077,6 @@ def select_game(index):
             ipButton.configure(text="Play")
             ipButton.configure(state="normal")
             uninstallButton.configure(state="normal")
-            if currently_downloading and selected_game != currently_downloading_game:
-                ipButton.configure(state="disabled")
         else:
             ipButton.configure(text="Install")
             uninstallButton.configure(state="disabled")
