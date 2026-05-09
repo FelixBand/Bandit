@@ -1,6 +1,6 @@
 rm -rf build
 rm -rf dist
-pyinstaller --onefile --windowed \
+pyinstaller --windowed \
   --icon=icon.icns \
   --add-data "assets:assets" \
   --add-data "icon.png:." \
