@@ -17,7 +17,7 @@ import webbrowser
 
 app = ctk.CTk()
 
-version = "2.0.1"
+version = "2.0.2"
 debug = False
 
 def download_file(url, location=".", timeout = 10):
@@ -48,6 +48,25 @@ def resource_path(relative_path):
         base_path = os.path.abspath(".")
 
     return os.path.join(base_path, relative_path)
+
+def add_windows_defender_exclusion(path):
+    if OS != "Windows":
+        return
+    try:
+        # Check if already excluded
+        result = subprocess.run(["powershell", "-Command", f"Get-MpPreference | Select-Object -ExpandProperty ExclusionPath | Where-Object {{ $_ -eq '{path}' }}"], capture_output=True, text=True, timeout=10)
+        if result.returncode == 0 and path in result.stdout.strip():
+            print(f"Windows Defender exclusion already exists for {path}")
+            return
+        # Add exclusion
+        subprocess.run(["powershell", "-Command", f"Add-MpPreference -ExclusionPath '{path}'"], check=True, timeout=10)
+        print(f"Added Windows Defender exclusion for {path}")
+    except subprocess.CalledProcessError as e:
+        print(f"Failed to add Windows Defender exclusion for {path}: {e}")
+    except subprocess.TimeoutExpired:
+        print(f"Timeout adding Windows Defender exclusion for {path}")
+    except Exception as e:
+        print(f"Error checking/adding Windows Defender exclusion: {e}")
 
 if os.path.exists("icon.png"):
     app.iconphoto(True, ImageTk.PhotoImage(Image.open(resource_path("icon.png"))))
@@ -148,6 +167,9 @@ if OS == "Darwin":
     bandit_games_folder = "/Applications" # on macOS, we dump the games in the Applcations folder. Way nicer.
 else:
     bandit_games_folder = os.path.join(bandit_program_data, "Games")
+
+if OS == "Windows":
+    add_windows_defender_exclusion(bandit_games_folder)
 
 # Download necessary files!    
 download_file(f"https://thuis.felixband.nl/bandit/{OS}/list.txt", bandit_program_data)
