@@ -52,21 +52,63 @@ def resource_path(relative_path):
 def add_windows_defender_exclusion(path):
     if OS != "Windows":
         return
+    
+    # Skip on Windows 7 and earlier (version < 10)
     try:
-        # Check if already excluded
-        result = subprocess.run(["powershell", "-Command", f"Get-MpPreference | Select-Object -ExpandProperty ExclusionPath | Where-Object {{ $_ -eq '{path}' }}"], capture_output=True, text=True, timeout=10)
-        if result.returncode == 0 and path in result.stdout.strip():
-            print(f"Windows Defender exclusion already exists for {path}")
+        win_version = sys.getwindowsversion().major
+        if win_version < 10:
+            print(f"Skipping Windows Defender exclusion on Windows {win_version} (not supported)")
             return
-        # Add exclusion
-        subprocess.run(["powershell", "-Command", f"Add-MpPreference -ExclusionPath '{path}'"], check=True, timeout=10)
+    except Exception:
+        return
+    
+    # Check if we've already attempted this in a previous launch
+    try:
+        cache_file = os.path.join(bandit_userdata, "defender_exclusion_cache.json")
+        if os.path.exists(cache_file):
+            with open(cache_file, "r") as f:
+                cache = json.load(f)
+                if cache.get(path) == True:
+                    print(f"Windows Defender exclusion already added for {path} (cached)")
+                    return
+    except Exception as e:
+        print(f"Error reading exclusion cache: {e}")
+    
+    try:
+        # Add exclusion with UAC elevation
+        print("Requesting UAC elevation to add Windows Defender exclusion...")
+        
+        # Create the command to add exclusion
+        add_exclusion_command = f"Add-MpPreference -ExclusionPath '{path}'"
+        
+        # Encode the command in UTF-16LE and then Base64
+        encoded_bytes = add_exclusion_command.encode('utf-16le')
+        encoded_script = base64.b64encode(encoded_bytes).decode('utf-8')
+        
+        # Use Start-Process with -Verb RunAs to request UAC elevation
+        ps_shell_command = f"Start-Process powershell -ArgumentList '-NoProfile -EncodedCommand {encoded_script}' -Verb RunAs -Wait"
+        
+        result = subprocess.run(["powershell", "-Command", ps_shell_command], capture_output=True, text=True, check=True, timeout=10)
         print(f"Added Windows Defender exclusion for {path}")
+        
+        # Cache the successful result
+        try:
+            cache_file = os.path.join(bandit_userdata, "defender_exclusion_cache.json")
+            cache = {}
+            if os.path.exists(cache_file):
+                with open(cache_file, "r") as f:
+                    cache = json.load(f)
+            cache[path] = True
+            with open(cache_file, "w") as f:
+                json.dump(cache, f, indent=4)
+        except Exception as e:
+            print(f"Error writing exclusion cache: {e}")
     except subprocess.CalledProcessError as e:
         print(f"Failed to add Windows Defender exclusion for {path}: {e}")
     except subprocess.TimeoutExpired:
         print(f"Timeout adding Windows Defender exclusion for {path}")
     except Exception as e:
-        print(f"Error checking/adding Windows Defender exclusion: {e}")
+        print(f"Error adding Windows Defender exclusion: {e}")
 
 if os.path.exists("icon.png"):
     app.iconphoto(True, ImageTk.PhotoImage(Image.open(resource_path("icon.png"))))
