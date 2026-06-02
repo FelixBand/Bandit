@@ -17,7 +17,7 @@ import webbrowser
 
 app = ctk.CTk()
 
-version = "2.0.1"
+version = "2.0.2"
 debug = False
 
 def download_file(url, location=".", timeout = 10):
