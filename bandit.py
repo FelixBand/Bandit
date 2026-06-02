@@ -886,12 +886,25 @@ installed_games_frame = ctk.CTkScrollableFrame(tabview.tab("Installed"))
 installed_games_frame.pack(fill="both", expand=True)
 
 def _on_mousewheel(event):
-    game_list_frame._parent_canvas.yview_scroll(int(-1*(event.delta/1)), "units")
+    # Scroll the current active tab
+    current_tab = tabview.get()
+    if current_tab == "All Games":
+        game_list_frame._parent_canvas.yview_scroll(int(-1*(event.delta/1)), "units")
+    elif current_tab == "Installed":
+        installed_games_frame._parent_canvas.yview_scroll(int(-1*(event.delta/1)), "units")
+
+def _on_scroll_linux(delta):
+    # Scroll the current active tab on Linux
+    current_tab = tabview.get()
+    if current_tab == "All Games":
+        game_list_frame._parent_canvas.yview_scroll(delta, "units")
+    elif current_tab == "Installed":
+        installed_games_frame._parent_canvas.yview_scroll(delta, "units")
 
 # This shit is necessary to be able to scroll for some reason... Tk is kinda crappy
-game_list_frame.bind_all("<MouseWheel>", _on_mousewheel)  # Windows & macOS
-game_list_frame.bind_all("<Button-4>", lambda e: game_list_frame._parent_canvas.yview_scroll(-1, "units"))  # Linux scroll up
-game_list_frame.bind_all("<Button-5>", lambda e: game_list_frame._parent_canvas.yview_scroll(1, "units"))   # Linux scroll down
+app.bind("<MouseWheel>", _on_mousewheel)  # Windows & macOS
+app.bind("<Button-4>", lambda e: _on_scroll_linux(-1))  # Linux scroll up
+app.bind("<Button-5>", lambda e: _on_scroll_linux(1))   # Linux scroll down
 
 # Track selection index
 selected_game = None
