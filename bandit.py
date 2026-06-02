@@ -537,7 +537,7 @@ def download_tar_url(url, destination, display_name="download"):
     currently_downloading = True
 
     try:
-        with requests.get(url, stream=True, timeout=10) as response:
+        with requests.get(url, stream=True, timeout=None) as response:
             response.raise_for_status()
             return _download_tar_from_response(response, destination, display_name)
     except Exception as e:
@@ -611,7 +611,7 @@ def download_proton_ge(destination=None):
     currently_downloading = True
 
     try:
-        with requests.get(url, stream=True, timeout=10) as response:
+        with requests.get(url, stream=True, timeout=None) as response:
             response.raise_for_status()
 
             total_size = int(response.headers.get("Content-Length", 0))
