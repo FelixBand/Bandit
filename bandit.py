@@ -831,6 +831,8 @@ def tick_box(setting, value):
 def settings_clicked():
     settings_window = ctk.CTkToplevel(app)
     settings_window.title("Bandit Settings")
+    settings_window.transient(app)  # Make it modal and always on top
+    settings_window.attributes('-topmost', True)  # Force window to top on all platforms
     settings_window.protocol(
         "WM_DELETE_WINDOW",
         lambda: settings_closed(settings_window))
