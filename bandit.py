@@ -865,7 +865,7 @@ settingsButton = ctk.CTkButton(app,
 settingsButton.pack(pady=0, anchor="ne")
 
 if OS == "Darwin":
-    fontSize = 18
+    fontSize = 14
 else:
     fontSize = 12
 
