@@ -1458,7 +1458,17 @@ def install_or_play():
             try:
                 # RUN GAME
                 if OS == "Darwin":
-                    subprocess.Popen(["open", game_path], cwd=os.path.dirname(game_path))
+                    try:
+                        # If it's a macOS application bundle (ends with .app) open it with Finder
+                        if str(game_path).endswith('.app') or (os.path.isdir(game_path) and str(game_path).endswith('.app')):
+                            subprocess.Popen(["open", game_path], cwd=os.path.dirname(game_path))
+                        else:
+                            # Otherwise attempt to execute the file directly (native binary)
+                            # Ensure executable bit if possible
+                            if os.path.exists(game_path):
+                                subprocess.Popen([game_path], cwd=os.path.dirname(game_path))
+                    except Exception as e:
+                        tk.messagebox.showerror("Error", f"Failed to launch the game on macOS. Error: {e}")
                 elif OS == "Linux" and section == "Windows":
                     if not ensure_proton_installed():
                         return
