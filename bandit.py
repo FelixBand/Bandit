@@ -17,7 +17,7 @@ import webbrowser
 
 app = ctk.CTk()
 
-version = "2.0.2"
+version = "2.1.0"
 debug = False
 
 def download_file(url, location=".", timeout = 10):
@@ -231,6 +231,7 @@ def send_telemetry(event_type, game_id=None, game_name=None):
                 "event_type": event_type,
                 "username": os.getenv("USER", os.getenv("USERNAME", "unknown")),
                 "app_version": version,
+                "os": OS,
             }
             if game_id:
                 telemetry_data["game_id"] = game_id
@@ -810,11 +811,10 @@ def run_with_proton(executable_path, working_dir):
     env["WINEDLLOVERRIDES"] = "dinput8,winhttp,winmm=n,b"
 
     try:
-        subprocess.Popen([proton_binary, "run", executable_path], cwd=working_dir, env=env)
-        return True
+        return subprocess.Popen([proton_binary, "run", executable_path], cwd=working_dir, env=env)
     except Exception as e:
         tk.messagebox.showerror("Error", f"Failed to launch with Proton: {e}")
-        return False
+        return None
 
 
 def tick_box(setting, value):
@@ -1031,6 +1031,8 @@ make_game_list()
 
 currently_downloading = False
 currently_downloading_game = None
+current_game_process = None
+current_game_process_game_id = None
 
 selected_game = None
 
@@ -1086,22 +1088,9 @@ def select_game(index):
     else:
         prev_selected_installed = None
 
-    # update buttons depending on install/download state
+    # update buttons depending on install/download/game state
     try:
-        if gameIDs[selected_game] in installedGames:
-            ipButton.configure(text="Play")
-            ipButton.configure(state="normal")
-            uninstallButton.configure(state="normal")
-        else:
-            ipButton.configure(text="Install")
-            uninstallButton.configure(state="disabled")
-            if not currently_downloading:
-                ipButton.configure(state="normal")
-            else:
-                ipButton.configure(state="disabled")
-        if currently_downloading and selected_game == currently_downloading_game:
-            ipButton.configure(text="Cancel Download")
-            ipButton.configure(state="normal")
+        update_launch_button_state()
     except Exception:
         pass
 
@@ -1123,6 +1112,88 @@ def show_context_menu(event, index):
     menu.add_command(label="Move game", command=lambda: move_game(index))
     menu.add_command(label="Create desktop shortcut", command=lambda: create_shortcut(index))
     menu.post(event.x_root, event.y_root)
+
+
+def reset_game_process_state():
+    global current_game_process, current_game_process_game_id
+    current_game_process = None
+    current_game_process_game_id = None
+    if selected_game is not None:
+        select_game(selected_game)
+
+
+def update_launch_button_state():
+    if selected_game is None or not 0 <= selected_game < len(gameIDs):
+        ipButton.configure(text="Install/Play", state="disabled")
+        uninstallButton.configure(state="disabled")
+        return
+
+    if currently_downloading and selected_game == currently_downloading_game:
+        ipButton.configure(text="Cancel Download", state="normal")
+        uninstallButton.configure(state="disabled")
+        return
+
+    selected_game_id = gameIDs[selected_game]
+    is_installed = selected_game_id in installedGames
+    is_running = current_game_process is not None and selected_game_id == current_game_process_game_id
+
+    if is_installed:
+        if is_running:
+            ipButton.configure(text="Quit game", state="normal")
+            uninstallButton.configure(state="disabled")
+        else:
+            ipButton.configure(text="Play", state="normal")
+            uninstallButton.configure(state="normal")
+    else:
+        ipButton.configure(text="Install", state="normal" if not currently_downloading else "disabled")
+        uninstallButton.configure(state="disabled")
+
+
+def quit_game():
+    global current_game_process, current_game_process_game_id
+    if current_game_process is None:
+        return
+
+    try:
+        current_game_process.terminate()
+        try:
+            current_game_process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            current_game_process.kill()
+            current_game_process.wait(timeout=5)
+    except Exception:
+        pass
+
+    game_id = current_game_process_game_id
+    game_name = None
+    if game_id in gameIDs:
+        game_name = gameNames[gameIDs.index(game_id)]
+
+    current_game_process = None
+    current_game_process_game_id = None
+    infoLabel.configure(text="Game closed.")
+    send_telemetry("game_exited", game_id=game_id, game_name=game_name)
+    if selected_game is not None:
+        select_game(selected_game)
+
+
+def check_running_game_process():
+    global current_game_process, current_game_process_game_id
+    if current_game_process is not None:
+        if current_game_process.poll() is not None:
+            game_id = current_game_process_game_id
+            game_name = None
+            if game_id in gameIDs:
+                game_name = gameNames[gameIDs.index(game_id)]
+            send_telemetry("game_exited", game_id=game_id, game_name=game_name)
+            current_game_process = None
+            current_game_process_game_id = None
+            infoLabel.configure(text="Game exited.")
+            if selected_game is not None:
+                select_game(selected_game)
+            else:
+                update_launch_button_state()
+    app.after(1000, check_running_game_process)
 
 
 def move_game(game_index):
@@ -1372,7 +1443,11 @@ def download_tar(game_id, destination = bandit_games_folder, source_os=None):
 
 def install_or_play():
     # if currently downloading & selected curr downloading game, cancel
-    global currently_downloading, currently_downloading_game
+    global currently_downloading, currently_downloading_game, current_game_process, current_game_process_game_id
+
+    if selected_game is None or not 0 <= selected_game < len(gameIDs):
+        return
+
     if currently_downloading and selected_game == currently_downloading_game:
         currently_downloading = False
         print("Cancelling download...")
@@ -1385,9 +1460,19 @@ def install_or_play():
             "Please wait until the current download or move is complete."
         )
         return
+
+    if current_game_process is not None:
+        if gameIDs[selected_game] == current_game_process_game_id:
+            quit_game()
+        else:
+            tk.messagebox.showinfo(
+                "Game already running",
+                "A game is already running. Quit it before launching another game."
+            )
+        return
     
     # if selected game is installed, play!
-    elif gameIDs[selected_game] in installedGames:
+    if gameIDs[selected_game] in installedGames:
         print(f'Launching {selected_game}!')
         section, install_path = get_installed_game_info(gameIDs[selected_game])
         if not section or not install_path:
@@ -1457,27 +1542,32 @@ def install_or_play():
 
             try:
                 # RUN GAME
+                proc = None
                 if OS == "Darwin":
                     try:
-                        # If it's a macOS application bundle (ends with .app) open it with Finder
+                        # If it's a macOS application bundle (ends with .app) open it with Finder and wait until it closes
                         if str(game_path).endswith('.app') or (os.path.isdir(game_path) and str(game_path).endswith('.app')):
-                            subprocess.Popen(["open", game_path], cwd=os.path.dirname(game_path))
+                            proc = subprocess.Popen(["open", "-W", game_path], cwd=os.path.dirname(game_path))
                         else:
                             # Otherwise attempt to execute the file directly (native binary)
-                            # Ensure executable bit if possible
                             if os.path.exists(game_path):
-                                subprocess.Popen([game_path], cwd=os.path.dirname(game_path))
+                                proc = subprocess.Popen([game_path], cwd=os.path.dirname(game_path))
                     except Exception as e:
                         tk.messagebox.showerror("Error", f"Failed to launch the game on macOS. Error: {e}")
                 elif OS == "Linux" and section == "Windows":
                     if not ensure_proton_installed():
                         return
-                    if run_with_proton(game_path, os.path.dirname(game_path)):
-                        send_telemetry("game_launched", game_id=gameIDs[selected_game], game_name=gameNames[selected_game])
+                    proc = run_with_proton(game_path, os.path.dirname(game_path))
+                    if proc is None:
+                        tk.messagebox.showerror("Error", "Failed to run the Windows game with Proton.")
                         return
-                    tk.messagebox.showerror("Error", "Failed to run the Windows game with Proton.")
                 else:
-                    subprocess.Popen(game_path, cwd=os.path.dirname(game_path), shell=True)
+                    proc = subprocess.Popen([game_path], cwd=os.path.dirname(game_path))
+
+                if proc is not None:
+                    current_game_process = proc
+                    current_game_process_game_id = gameIDs[selected_game]
+                    update_launch_button_state()
                 send_telemetry("game_launched", game_id=gameIDs[selected_game], game_name=gameNames[selected_game])
             except Exception as e:
                 tk.messagebox.showerror("Error", f"Failed to launch the game. Error: {e}")
@@ -1523,6 +1613,7 @@ def install_or_play():
                     app.after(0, lambda: select_game(selected_game))
                     return
 
+            send_telemetry("download_started", game_id=gameIDs[selected_game], game_name=gameNames[selected_game])
             success = download_tar(gameIDs[selected_game], game_destination, source_os=install_source_os)
 
             def after():
@@ -1717,5 +1808,6 @@ def check_for_updates():
 check_for_updates()
 
 show_telemetry_disclaimer()
+app.after(1000, check_running_game_process)
 
 app.mainloop() # Up and away!
