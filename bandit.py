@@ -828,7 +828,15 @@ def tick_box(setting, value):
 
     print(f"{setting} set to {value}")
 
+settings_window = None
+
 def settings_clicked():
+    global settings_window
+    if settings_window is not None and settings_window.winfo_exists():
+        settings_window.lift()
+        settings_window.focus_force()
+        return
+
     settings_window = ctk.CTkToplevel(app)
     settings_window.title("Bandit Settings")
     settings_window.transient(app)  # Make it modal and always on top
@@ -855,9 +863,11 @@ def settings_clicked():
         checkbox.pack(padx=20, pady=10)
 
 def settings_closed(window):
+    global settings_window
     print('apply settings')
     apply_settings()
     window.destroy()
+    settings_window = None
 
 settingsButton = ctk.CTkButton(app,
     text="⚙️", width=40, height=40, fg_color="#5F5F5F", command=settings_clicked)
@@ -1052,8 +1062,7 @@ def format_size(size_in_bytes):
             pass
 
 def select_game(index):
-    global selected_game
-    global selected_game, prev_selected
+    global selected_game, prev_selected, prev_selected_installed
     selected_game = index
 
     # only update previous and current selection visuals to avoid looping all items
@@ -1122,6 +1131,31 @@ def reset_game_process_state():
         select_game(selected_game)
 
 
+def terminate_game_process(proc):
+    if proc is None:
+        return
+
+    if OS == "Windows" and proc.poll() is None:
+        try:
+            subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True, text=True)
+        except Exception:
+            pass
+
+    try:
+        proc.terminate()
+    except Exception:
+        pass
+
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        try:
+            proc.kill()
+            proc.wait(timeout=5)
+        except Exception:
+            pass
+
+
 def update_launch_button_state():
     if selected_game is None or not 0 <= selected_game < len(gameIDs):
         ipButton.configure(text="Install/Play", state="disabled")
@@ -1154,15 +1188,7 @@ def quit_game():
     if current_game_process is None:
         return
 
-    try:
-        current_game_process.terminate()
-        try:
-            current_game_process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            current_game_process.kill()
-            current_game_process.wait(timeout=5)
-    except Exception:
-        pass
+    terminate_game_process(current_game_process)
 
     game_id = current_game_process_game_id
     game_name = None
@@ -1562,7 +1588,11 @@ def install_or_play():
                         tk.messagebox.showerror("Error", "Failed to run the Windows game with Proton.")
                         return
                 else:
-                    proc = subprocess.Popen([game_path], cwd=os.path.dirname(game_path))
+                    proc = subprocess.Popen(
+                        [game_path],
+                        cwd=os.path.dirname(game_path),
+                        creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if OS == "Windows" else 0
+                    )
 
                 if proc is not None:
                     current_game_process = proc
