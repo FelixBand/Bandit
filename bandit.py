@@ -1,5 +1,6 @@
 import customtkinter as ctk
 import tkinter as tk  # native
+from tkinter import simpledialog
 import platform
 import os
 import json
@@ -75,6 +76,7 @@ linux_game_ids = set()
 windows_game_ids = set()
 
 installedPrereqs = set()
+account_name = None
 
 # Store per-item widgets so we can update their appearance later
 game_item_buttons = []
@@ -134,7 +136,7 @@ elif platform.system() == "Darwin":
             subprocess.run([
                 "osascript",
                 "-e",
-                f'do shell script "mkdir -p \\"{bandit_program_data}\\" && chmod 777 \\"{bandit_program_data}\\"" with administrator privileges'
+                f'do shell script "mkdir -p \\"{bandit_program_data}\\" && chmod -R 777 \\"{bandit_program_data}\\"" with administrator privileges'
             ])
         except Exception as e:
             print(f"Failed to create system-wide folder: {e}")
@@ -205,7 +207,7 @@ try:
     open(f"{bandit_userdata}/settings.json", "r")
 except FileNotFoundError:
     with open(f"{bandit_userdata}/settings.json", "w") as f:
-        f.write('{"Ask where to install games to": false, "Enable Telemetry": true, "_first_launch": true}')
+        f.write('{"Ask where to install games to": false, "Enable Telemetry": true, "Account name": "", "_first_launch": true}')
 
 # load and apply settings
 def apply_settings():
@@ -215,7 +217,83 @@ def apply_settings():
         ask_install_path = settings.get("Ask where to install games to", False)
         print(settings)
 
+
+def get_default_account_name():
+    return os.getenv("USER", os.getenv("USERNAME", "unknown"))
+
+
+def write_account_name_files(account_name):
+    if not account_name:
+        return
+
+    target_folders = []
+    if OS == "Windows":
+        appdata = os.getenv("APPDATA")
+        if not appdata:
+            return
+
+        target_folders.extend([
+            os.path.join(appdata, "Goldberg SteamEmu Saves", "settings"),
+            os.path.join(appdata, "Goldberg SocialClub Emu Saves", "settings"),
+        ])
+    else:
+        home = os.path.expanduser("~")
+        target_folders.extend([
+            os.path.join(home, ".local", "share", "Goldberg SteamEmu Saves", "settings"),
+            os.path.join(home, ".local", "share", "Goldberg SocialClub Emu Saves", "settings"),
+        ])
+        if OS == "Linux":
+            target_folders.extend([
+                os.path.join(home, ".banditpfx", "pfx", "drive_c", "users", "steamuser", "AppData", "Roaming", "Goldberg SteamEmu Saves", "settings"),
+                os.path.join(home, ".banditpfx", "pfx", "drive_c", "users", "steamuser", "AppData", "Roaming", "Goldberg SocialClub Emu Saves", "settings"),
+            ])
+
+    for folder_path in target_folders:
+        try:
+            os.makedirs(folder_path, exist_ok=True)
+            with open(os.path.join(folder_path, "account_name.txt"), "w", encoding="utf-8") as f:
+                f.write(account_name)
+        except Exception as e:
+            print(f"[WARNING] Failed to write account_name.txt to {folder_path}: {e}")
+
+
+def set_account_name(name):
+    global account_name
+    account_name = name.strip() if name and name.strip() else get_default_account_name()
+
+    try:
+        with open(f"{bandit_userdata}/settings.json", "r") as f:
+            settings = json.load(f)
+    except Exception:
+        settings = {}
+
+    settings["Account name"] = account_name
+    with open(f"{bandit_userdata}/settings.json", "w") as f:
+        json.dump(settings, f, indent=4)
+
+    write_account_name_files(account_name)
+
+
+def ensure_account_name():
+    with open(f"{bandit_userdata}/settings.json", "r") as f:
+        settings = json.load(f)
+
+    account_name_value = settings.get("Account name", "").strip()
+    if not account_name_value:
+        prompt = simpledialog.askstring(
+            "Create Username",
+            "Enter a username to use in games (This can be changed anytime in Settings ⚙️):",
+            parent=app,
+        )
+        if prompt is None:
+            prompt = ""
+        set_account_name(prompt)
+    else:
+        set_account_name(account_name_value)
+
+
 apply_settings()
+ensure_account_name()
 
 def send_telemetry(event_type, game_id=None, game_name=None):
     """Send telemetry event to the telemetry server (non-blocking)"""
@@ -829,9 +907,11 @@ def tick_box(setting, value):
     print(f"{setting} set to {value}")
 
 settings_window = None
+settings_account_name_var = None
 
 def settings_clicked():
-    global settings_window
+    global settings_window, settings_account_name_var
+    settings_account_name_var = None
     if settings_window is not None and settings_window.winfo_exists():
         settings_window.lift()
         settings_window.focus_force()
@@ -851,6 +931,15 @@ def settings_clicked():
         # Skip internal flags (starting with _)
         if preference.startswith("_"):
             continue
+
+        if preference == "Account name":
+            settings_account_name_var = tk.StringVar(value=value)
+            label = ctk.CTkLabel(settings_window, text="Username")
+            label.pack(padx=20, pady=(20, 4), anchor="w")
+            entry = ctk.CTkEntry(settings_window, textvariable=settings_account_name_var, width=300)
+            entry.pack(padx=20, pady=(0, 10))
+            continue
+
         var = tk.BooleanVar(value=value)
         vars[preference] = var
 
@@ -863,8 +952,10 @@ def settings_clicked():
         checkbox.pack(padx=20, pady=10)
 
 def settings_closed(window):
-    global settings_window
+    global settings_window, settings_account_name_var
     print('apply settings')
+    if settings_account_name_var is not None:
+        set_account_name(settings_account_name_var.get())
     apply_settings()
     window.destroy()
     settings_window = None
@@ -979,6 +1070,19 @@ for line in rawlist:
     except IndexError:
         gameMPstatus.append("Unknown")
 
+def fix_macos_permissions():
+    """Ensure all users can access the Bandit folder on macOS"""
+    if OS == "Darwin" and os.path.exists(bandit_program_data):
+        try:
+            subprocess.run([
+                "osascript",
+                "-e",
+                f'do shell script "chmod -R 777 \\"{bandit_program_data}\\"" with administrator privileges'
+            ], timeout=5)
+        except Exception as e:
+            print(f"[WARNING] Failed to fix macOS permissions: {e}")
+
+fix_macos_permissions()
 refresh_installed_games()
 refresh_installed_prereqs()
 
@@ -1825,6 +1929,16 @@ def key_pressed(event):
     # Ignore modifier keys and non-printable characters
     if not event.char or not event.char.isprintable():
         return
+
+    focus_widget = app.focus_get()
+    if focus_widget is not None:
+        focus_toplevel = focus_widget.winfo_toplevel()
+        if focus_toplevel is not app:
+            return
+
+        focus_class = focus_widget.winfo_class()
+        if focus_class in ("Entry", "CTkEntry", "Text", "TEntry"):
+            return
 
     current_time = time.time()
     
