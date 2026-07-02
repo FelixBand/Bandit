@@ -898,12 +898,23 @@ installed_games_frame = ctk.CTkScrollableFrame(tabview.tab("Installed"))
 installed_games_frame.pack(fill="both", expand=True)
 
 def _on_mousewheel(event):
+    # Ignore horizontal/shift-based scroll events that can come from macOS trackpads.
+    if event.state & 0x1:
+        return
+
     # Scroll the current active tab
     current_tab = tabview.get()
+    scroll_amount = int(-1 * (event.delta / 120))
+    if scroll_amount == 0:
+        scroll_amount = int(-1 * event.delta)
+
+    if scroll_amount == 0:
+        return
+
     if current_tab == "All Games":
-        game_list_frame._parent_canvas.yview_scroll(int(-1*(event.delta/1)), "units")
+        game_list_frame._parent_canvas.yview_scroll(scroll_amount, "units")
     elif current_tab == "Installed":
-        installed_games_frame._parent_canvas.yview_scroll(int(-1*(event.delta/1)), "units")
+        installed_games_frame._parent_canvas.yview_scroll(scroll_amount, "units")
 
 def _on_scroll_linux(delta):
     # Scroll the current active tab on Linux
@@ -1043,6 +1054,9 @@ currently_downloading = False
 currently_downloading_game = None
 current_game_process = None
 current_game_process_game_id = None
+current_game_process_app_path = None
+current_game_process_app_name = None
+current_game_process_is_mac_app = False
 
 selected_game = None
 
@@ -1124,16 +1138,40 @@ def show_context_menu(event, index):
 
 
 def reset_game_process_state():
-    global current_game_process, current_game_process_game_id
+    global current_game_process, current_game_process_game_id, current_game_process_app_path, current_game_process_app_name, current_game_process_is_mac_app
     current_game_process = None
     current_game_process_game_id = None
+    current_game_process_app_path = None
+    current_game_process_app_name = None
+    current_game_process_is_mac_app = False
     if selected_game is not None:
         select_game(selected_game)
 
 
 def terminate_game_process(proc):
+    global current_game_process_app_path, current_game_process_app_name, current_game_process_is_mac_app
     if proc is None:
         return
+
+    if OS == "Darwin" and current_game_process_is_mac_app and current_game_process_app_name:
+        try:
+            subprocess.run(
+                ["osascript", "-e", f'tell application \"{current_game_process_app_name}\" to quit' ],
+                capture_output=True,
+                text=True,
+            )
+        except Exception:
+            pass
+
+    if OS == "Darwin" and current_game_process_is_mac_app and current_game_process_app_path:
+        try:
+            subprocess.run(
+                ["pkill", "-f", current_game_process_app_path],
+                capture_output=True,
+                text=True,
+            )
+        except Exception:
+            pass
 
     if OS == "Windows" and proc.poll() is None:
         try:
@@ -1184,7 +1222,7 @@ def update_launch_button_state():
 
 
 def quit_game():
-    global current_game_process, current_game_process_game_id
+    global current_game_process, current_game_process_game_id, current_game_process_app_path, current_game_process_app_name, current_game_process_is_mac_app
     if current_game_process is None:
         return
 
@@ -1197,6 +1235,9 @@ def quit_game():
 
     current_game_process = None
     current_game_process_game_id = None
+    current_game_process_app_path = None
+    current_game_process_app_name = None
+    current_game_process_is_mac_app = False
     infoLabel.configure(text="Game closed.")
     send_telemetry("game_exited", game_id=game_id, game_name=game_name)
     if selected_game is not None:
@@ -1204,7 +1245,7 @@ def quit_game():
 
 
 def check_running_game_process():
-    global current_game_process, current_game_process_game_id
+    global current_game_process, current_game_process_game_id, current_game_process_app_path, current_game_process_app_name, current_game_process_is_mac_app
     if current_game_process is not None:
         if current_game_process.poll() is not None:
             game_id = current_game_process_game_id
@@ -1214,6 +1255,9 @@ def check_running_game_process():
             send_telemetry("game_exited", game_id=game_id, game_name=game_name)
             current_game_process = None
             current_game_process_game_id = None
+            current_game_process_app_path = None
+            current_game_process_app_name = None
+            current_game_process_is_mac_app = False
             infoLabel.configure(text="Game exited.")
             if selected_game is not None:
                 select_game(selected_game)
@@ -1469,7 +1513,7 @@ def download_tar(game_id, destination = bandit_games_folder, source_os=None):
 
 def install_or_play():
     # if currently downloading & selected curr downloading game, cancel
-    global currently_downloading, currently_downloading_game, current_game_process, current_game_process_game_id
+    global currently_downloading, currently_downloading_game, current_game_process, current_game_process_game_id, current_game_process_app_path, current_game_process_app_name, current_game_process_is_mac_app
 
     if selected_game is None or not 0 <= selected_game < len(gameIDs):
         return
@@ -1574,10 +1618,16 @@ def install_or_play():
                         # If it's a macOS application bundle (ends with .app) open it with Finder and wait until it closes
                         if str(game_path).endswith('.app') or (os.path.isdir(game_path) and str(game_path).endswith('.app')):
                             proc = subprocess.Popen(["open", "-W", game_path], cwd=os.path.dirname(game_path))
+                            current_game_process_app_path = game_path
+                            current_game_process_app_name = os.path.splitext(os.path.basename(game_path))[0]
+                            current_game_process_is_mac_app = True
                         else:
                             # Otherwise attempt to execute the file directly (native binary)
                             if os.path.exists(game_path):
                                 proc = subprocess.Popen([game_path], cwd=os.path.dirname(game_path))
+                                current_game_process_app_path = game_path
+                                current_game_process_app_name = None
+                                current_game_process_is_mac_app = False
                     except Exception as e:
                         tk.messagebox.showerror("Error", f"Failed to launch the game on macOS. Error: {e}")
                 elif OS == "Linux" and section == "Windows":
