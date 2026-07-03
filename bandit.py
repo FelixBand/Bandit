@@ -298,6 +298,7 @@ ensure_account_name()
 def send_telemetry(event_type, game_id=None, game_name=None):
     """Send telemetry event to the telemetry server (non-blocking)"""
     def task():
+        global account_name
         try:
             with open(f"{bandit_userdata}/settings.json", "r") as f:
                 settings = json.load(f)
@@ -307,6 +308,7 @@ def send_telemetry(event_type, game_id=None, game_name=None):
             
             telemetry_data = {
                 "event_type": event_type,
+                "account_name": account_name or settings.get("Account name", "unknown"),
                 "username": os.getenv("USER", os.getenv("USERNAME", "unknown")),
                 "app_version": version,
                 "os": OS,

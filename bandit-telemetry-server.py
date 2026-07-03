@@ -47,7 +47,7 @@ def receive_telemetry():
             return jsonify({"error": "No JSON data"}), 400
 
         # Basic validation
-        required_fields = ["event_type", "username", "app_version", "os"]
+        required_fields = ["event_type", "account_name", "username", "app_version", "os"]
         missing = [f for f in required_fields if f not in data]
         if missing:
             print(f"[ERROR] Missing required fields: {missing}", file=sys.stderr)
@@ -56,6 +56,7 @@ def receive_telemetry():
         # Sanitize and validate
         event = {
             "event_type": str(data.get("event_type", "unknown"))[:50],
+            "account_name": str(data.get("account_name", "unknown"))[:100],
             "username": str(data.get("username", "unknown"))[:50],
             "app_version": str(data.get("app_version", "unknown"))[:20],
             "os": str(data.get("os", "unknown"))[:20],
