@@ -1629,11 +1629,12 @@ def install_or_play():
             select_game(selected_game)
         return
     if currently_downloading and selected_game != currently_downloading_game:
-        tk.messagebox.showinfo(
-            "Busy",
-            "Please wait until the current download or move is complete."
-        )
-        return
+        if gameIDs[selected_game] not in installedGames:
+            tk.messagebox.showinfo(
+                "Busy",
+                "Please wait until the current download or move is complete before installing or cancelling this game."
+            )
+            return
 
     if current_game_process is not None:
         if gameIDs[selected_game] == current_game_process_game_id:
