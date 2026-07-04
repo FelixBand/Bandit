@@ -1073,16 +1073,24 @@ for line in rawlist:
         gameMPstatus.append("Unknown")
 
 def fix_macos_permissions():
-    """Ensure all users can access the Bandit folder on macOS"""
-    if OS == "Darwin" and os.path.exists(bandit_program_data):
-        try:
-            subprocess.run([
-                "osascript",
-                "-e",
-                f'do shell script "chmod -R 777 \\"{bandit_program_data}\\"" with administrator privileges'
-            ], timeout=5)
-        except Exception as e:
-            print(f"[WARNING] Failed to fix macOS permissions: {e}")
+    """Only repair macOS permissions when the Bandit data folder is actually not writable."""
+    if OS != "Darwin" or not os.path.exists(bandit_program_data):
+        return
+
+    try:
+        if os.access(bandit_program_data, os.W_OK):
+            return
+    except Exception:
+        pass
+
+    try:
+        subprocess.run([
+            "osascript",
+            "-e",
+            f'do shell script "chmod -R 777 \\"{bandit_program_data}\\"" with administrator privileges'
+        ], timeout=5, check=False)
+    except Exception as e:
+        print(f"[WARNING] Failed to fix macOS permissions: {e}")
 
 fix_macos_permissions()
 refresh_installed_games()
