@@ -1616,7 +1616,7 @@ class MainWindow(QMainWindow):
         QMessageBox.about(
             self, "About Bandit",
             f"<b>Bandit Game Launcher</b><br>Version {VERSION}<br><br>"
-            "Built with PyQt6 and your system's native look.")
+            "Built with PyQt6 by FelixBand.")
 
     def ensure_account_name(self) -> None:
         name = (self.settings.get("Account name") or "").strip()
