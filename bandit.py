@@ -1263,6 +1263,7 @@ class MainWindow(QMainWindow):
         self.act_repair = self._mk("Verify / Repair Installation", self.repair)
         self.act_uninstall = self._mk("Uninstall…", self.uninstall, "Delete",
                                       self._icon("edit-delete", SP.SP_TrashIcon))
+        self.act_locate = self._mk("Locate Existing Installation…", self.locate_existing_installation)
 
         self.act_refresh = self._mk("Refresh Library", self.refresh_library,
                                     QKeySequence.StandardKey.Refresh,
@@ -1310,6 +1311,7 @@ class MainWindow(QMainWindow):
         m.addAction(self.act_fav)
         m.addAction(self.act_args)
         m.addAction(self.act_steam)
+        m.addAction(self.act_locate)
         m.addSeparator()
         for a in (self.act_browse, self.act_move, self.act_shortcut, self.act_repair):
             m.addAction(a)
@@ -1864,7 +1866,7 @@ class MainWindow(QMainWindow):
         if not game:
             self.stack.setCurrentIndex(0)
             for a in (self.act_primary, self.act_fav, self.act_args, self.act_steam, self.act_browse, self.act_move,
-                      self.act_shortcut, self.act_repair, self.act_uninstall):
+                      self.act_shortcut, self.act_repair, self.act_uninstall, self.act_locate):
                 a.setEnabled(False)
             self.act_primary.setText("Play")
             return
@@ -1913,6 +1915,7 @@ class MainWindow(QMainWindow):
         self.act_uninstall.setEnabled(idle_installed)
         self.btn_uninstall.setEnabled(idle_installed)
         self.btn_uninstall.setVisible(installed)
+        self.act_locate.setEnabled(not installed and not busy)
         self.act_repair.setEnabled(idle_installed or (st == "installed" and busy))
         self.act_move.setEnabled(idle_installed)
         self.act_browse.setEnabled(installed)
@@ -1967,6 +1970,8 @@ class MainWindow(QMainWindow):
         menu.addAction(self.act_primary)
         menu.addAction(self.act_fav)
         menu.addAction(self.act_args)
+        menu.addSeparator()
+        menu.addAction(self.act_locate)
         if self.is_installed(self.selected_game()):
             menu.addSeparator()
             for a in (self.act_browse, self.act_move, self.act_shortcut, self.act_repair):
@@ -2392,6 +2397,61 @@ class MainWindow(QMainWindow):
         manifest = self.manifests.get(section or "")
         folder = manifest.first_folder(game.id) if manifest else None
         return section, path, manifest, folder
+
+    @staticmethod
+    def _existing_install_root(selected_dir: str, manifest: Manifest, game_id: str) -> str | None:
+        executable = manifest.executables.get(game_id)
+        if not executable:
+            return None
+        parts = executable.replace("\\", "/").split("/")
+        folder, relative_executable = parts[0], parts[1:]
+        selected_dir = os.path.abspath(selected_dir)
+        candidates = [selected_dir]
+
+        if relative_executable and os.path.basename(selected_dir).casefold() == folder.casefold():
+            candidates.append(os.path.dirname(selected_dir))
+
+        for root in candidates:
+            if os.path.exists(os.path.join(root, *parts)):
+                return root
+
+        with os.scandir(selected_dir) as entries:
+            for entry in entries:
+                if entry.is_dir(follow_symlinks=False) and os.path.exists(os.path.join(entry.path, *parts)):
+                    return entry.path
+        return None
+
+    def locate_existing_installation(self) -> None:
+        game = self.selected_game()
+        if not game or self.is_installed(game) or self.active:
+            return
+
+        selected_dir = QFileDialog.getExistingDirectory(
+            self, f"Locate {game.name}", GAMES_FOLDER)
+        if not selected_dir:
+            return
+
+        sources = [source for source in (OS, "Windows") if source in game.sources]
+        try:
+            for source in sources:
+                manifest = self.manifests.get(source)
+                if manifest is None:
+                    continue
+                install_root = self._existing_install_root(selected_dir, manifest, game.id)
+                if install_root:
+                    self.store.add(source, game.id, install_root)
+                    self.set_status(f"Found existing {game.name} installation.")
+                    self.refresh_installed()
+                    return
+        except OSError as e:
+            QMessageBox.warning(self, "Locate Existing Installation",
+                                f"Could not inspect the selected folder:\n{e}")
+            return
+
+        QMessageBox.information(
+            self, "Game Not Found",
+            f"Couldn't find the expected game launcher for {game.name} in that folder or its "
+            "immediate subfolders. Select the game folder or the folder containing it.")
 
     def uninstall(self) -> None:
         game = self.selected_game()
