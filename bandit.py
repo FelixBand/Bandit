@@ -1,2018 +1,2655 @@
-import customtkinter as ctk
-import tkinter as tk  # native
-from tkinter import simpledialog
-import platform
-import os
-import json
-import requests
-import subprocess
-import tarfile
-import threading
-import shutil
-import tempfile
-import time
+#!/usr/bin/env python3
+from __future__ import annotations
+
 import base64
-from PIL import Image, ImageTk
+import json
+import os
+import platform
+import random
+import re
+import shlex
+import shutil
+import subprocess
 import sys
+import tarfile
+import tempfile
+import threading
+import time
 import webbrowser
+from dataclasses import dataclass, field
+from datetime import timezone
+from email.utils import parsedate_to_datetime
 
-app = ctk.CTk()
+import requests
+from PyQt6.QtCore import (
+    QDateTime, QEvent, QLocale, QModelIndex, QObject, QPointF, QRect, QRectF, QRunnable,
+    QSettings, QSize, QSortFilterProxyModel, Qt, QThread, QThreadPool, QTimer, pyqtSignal,
+)
+from PyQt6.QtGui import (
+    QAction, QBrush, QColor, QFont, QIcon, QKeySequence, QLinearGradient, QPainter,
+    QPainterPath, QPalette, QPen, QPixmap, QStandardItem, QStandardItemModel,
+)
+from PyQt6.QtWidgets import (
+    QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog,
+    QDialogButtonBox, QFileDialog, QFormLayout, QFrame, QGridLayout, QHBoxLayout, QHeaderView,
+    QInputDialog, QLabel, QLineEdit, QMainWindow, QMenu, QMessageBox,
+    QProgressBar, QPushButton, QSizePolicy, QSlider, QSplitter, QStackedWidget, QStyle,
+    QStyledItemDelegate, QStyleOptionViewItem, QTreeView,
+    QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
+)
 
-version = "2.1.0"
-debug = False
+# --------------------------------------------------------------------------- #
+# 1. Constants & platform paths
+# --------------------------------------------------------------------------- #
 
-def download_file(url, location=".", timeout = 10):
-    response = requests.get(url, timeout=timeout)
-    response.raise_for_status() # crash if download failed
-    filename = url.split("/")[-1]
-    with open(f"{location}/{filename}", "w") as f:
-        f.write(response.text)
+VERSION = "3.0.0"
+BASE_URL = "https://thuis.felixband.nl/bandit"
+TELEMETRY_ENDPOINTS = (
+    "https://thuis.felixband.nl/api/telemetry",
+    "http://thuis.felixband.nl:5001/api/telemetry",
+)
+GITHUB_LATEST = "https://api.github.com/repos/FelixBand/Bandit/releases/latest"
+RELEASES_PAGE = "https://github.com/FelixBand/Bandit/releases/latest"
+PROTON_API = "https://api.github.com/repos/GloriousEggroll/proton-ge-custom/releases/latest"
 
-    return filename
-
-# window properties
-app.title(f"Bandit - Game Launcher v{version}")
-app.minsize(450, 600)
-app.geometry("650x700+50+50") # 50 padding
-ctk.set_appearance_mode("dark")
-
-if debug:
-    OS = "Windows"
-else:
-    OS = platform.system()
-
-def resource_path(relative_path):
-    """ Get absolute path to resource (works for dev and PyInstaller) """
-    try:
-        base_path = sys._MEIPASS  # PyInstaller temp dir
-    except AttributeError:
-        base_path = os.path.abspath(".")
-
-    return os.path.join(base_path, relative_path)
-
-if os.path.exists("icon.png"):
-    app.iconphoto(True, ImageTk.PhotoImage(Image.open(resource_path("icon.png"))))
-
-if OS == "Windows":
-    try:
-        app.iconbitmap(resource_path("icon.ico"))
-    except Exception:
-        pass
-    
-
-# MP icon cache for asset images
-mp_icon_images = {}
-
-# some globals for later
-rawlist = []
-gameNames = []
-gameIDs = []
-gameSizes = []
-gameMPstatus = []
-
-installedGames = []
-
-linux_game_ids = set()
-windows_game_ids = set()
-
-installedPrereqs = set()
-account_name = None
-
-# Store per-item widgets so we can update their appearance later
-game_item_buttons = []
-installed_game_item_buttons = []
-installed_game_original_indices = []
-
-# App data locations
-if platform.system() == "Windows":
-    bandit_userdata = f"{os.getenv('APPDATA')}/BanditGameLauncher"
-    if not os.path.exists(bandit_userdata):
-        os.makedirs(bandit_userdata)
-elif platform.system() == "Darwin": # MacOS
-    bandit_userdata = f"{os.path.expanduser('~')}/Library/Application Support/BanditGameLauncher"
-    if not os.path.exists(bandit_userdata):
-        os.makedirs(bandit_userdata)
-elif platform.system() == "Linux":
-    bandit_userdata = f"{os.path.expanduser('~')}/.config/BanditGameLauncher"
-    if not os.path.exists(bandit_userdata):
-        os.makedirs(bandit_userdata)
-
-# System wide data + game install location.
-if platform.system() == "Windows":
-    bandit_program_data = os.path.join(os.getenv("PROGRAMDATA"), "BanditGameLauncher")
-    if not os.path.exists(bandit_program_data):
-        print("Creating system-wide folder...")
-        try:
-            os.makedirs(os.path.join(bandit_program_data, "Games"))
-        except Exception as e:
-            print(f"Failed to create system-wide folder: {e}")
-            exit(1)
-        if not os.path.exists(bandit_program_data):
-            print("Failed to create system-wide folder. Please run this program as administrator.")
-            exit(1)
-elif platform.system() == "Linux":
-    bandit_program_data = "/etc/BanditGameLauncher"
-    # same for osx and linux
-    print('check if exists')
-    if not os.path.exists(bandit_program_data):
-        print('create')
-        # visual sudo prompt using pkexec. combine two commands so the user doesn't have to enter their password twice
-        subprocess.run(["pkexec", "sh", "-c", f"mkdir {bandit_program_data} && mkdir {os.path.join(bandit_program_data, 'Games')} && mkdir {os.path.join(bandit_program_data, 'Windows')} && chmod 777 {bandit_program_data} && chmod 777 {os.path.join(bandit_program_data, 'Games')} && chmod 777 {os.path.join(bandit_program_data, 'Windows')}"])
-        # if fails, exit
-        if not os.path.exists(bandit_program_data):
-            print("Failed to create system-wide folder. Please run this program as root or with sudo.")
-            exit(1)
-
-    pfxhome = f"{os.path.expanduser('~')}/.banditpfx/pfx/drive_c/users/steamuser"
-    if not os.path.exists(f"{os.path.expanduser('~')}/.banditpfx"):
-        subprocess.run(["sh", "-c", f"mkdir -p {pfxhome}/AppData && ln -s {pfxhome}/AppData {os.path.expanduser('~')} &&ln -s {os.path.expanduser('~')}/Downloads {pfxhome} && ln -s {os.path.expanduser('~')}/Documents {pfxhome} && ln -s {os.path.expanduser('~')}/Desktop {pfxhome} && ln -s {os.path.expanduser('~')}/Music {pfxhome} && ln -s {os.path.expanduser('~')}/Pictures {pfxhome} && ln -s {os.path.expanduser('~')}/Videos {pfxhome}"])
-elif platform.system() == "Darwin":
-    bandit_program_data = "/Library/Application Support/BanditGameLauncher"
-
-    if not os.path.exists(bandit_program_data):
-        print("Creating system-wide folder...")
-
-        try:
-            subprocess.run([
-                "osascript",
-                "-e",
-                f'do shell script "mkdir -p \\"{bandit_program_data}\\" && chmod -R 777 \\"{bandit_program_data}\\"" with administrator privileges'
-            ])
-        except Exception as e:
-            print(f"Failed to create system-wide folder: {e}")
-            exit(1)
-
-        if not os.path.exists(bandit_program_data):
-            print("Failed to create system-wide folder. Please run this program as administrator.")
-            exit(1)
-
-if OS == "Darwin":
-    bandit_games_folder = "/Applications" # on macOS, we dump the games in the Applcations folder. Way nicer.
-else:
-    bandit_games_folder = os.path.join(bandit_program_data, "Games")
-
-# Download necessary files!    
-download_file(f"https://thuis.felixband.nl/bandit/{OS}/list.txt", bandit_program_data)
-download_file(f"https://thuis.felixband.nl/bandit/{OS}/executable_paths.json", bandit_program_data)
-download_file(f"https://thuis.felixband.nl/bandit/{OS}/prereq_paths.json", bandit_program_data)
-download_file(f"https://thuis.felixband.nl/bandit/{OS}/icon_paths.json", bandit_program_data)
-
-if OS == "Linux":
-    download_file(f"https://thuis.felixband.nl/bandit/Windows/list.txt", os.path.join(bandit_program_data, 'Windows'))
-    download_file(f"https://thuis.felixband.nl/bandit/Windows/executable_paths.json", os.path.join(bandit_program_data, 'Windows'))
-    download_file(f"https://thuis.felixband.nl/bandit/Windows/prereq_paths.json", os.path.join(bandit_program_data, 'Windows'))
-    download_file(f"https://thuis.felixband.nl/bandit/Windows/icon_paths.json", os.path.join(bandit_program_data, 'Windows'))
-
-# migrate old saved_paths.json to new installed_games.json if needed
+# Set BANDIT_DEBUG_OS=Windows (etc.) to test another platform's catalog.
+OS = os.environ.get("BANDIT_DEBUG_OS") or platform.system()  # Windows / Linux / Darwin
+HOME = os.path.expanduser("~")
 
 if OS == "Windows":
-    old_saved_paths = os.path.join(f"{os.getenv('APPDATA')}/BanditGameLauncher/saved_paths.json")
+    USER_DATA = os.path.join(os.getenv("APPDATA", HOME), "BanditGameLauncher")
+    PROGRAM_DATA = os.path.join(os.getenv("PROGRAMDATA", HOME), "BanditGameLauncher")
 elif OS == "Darwin":
-    old_saved_paths = os.path.join(f"{os.path.expanduser('~')}/Library/Application Support/BanditGameLauncher/saved_paths.json")
-elif OS == "Linux":
-    old_saved_paths = os.path.join(f"{os.path.expanduser('~')}/.config/banditgamelauncher/saved_paths.json")
+    USER_DATA = os.path.join(HOME, "Library", "Application Support", "BanditGameLauncher")
+    PROGRAM_DATA = "/Library/Application Support/BanditGameLauncher"
 else:
-    old_saved_paths = None
+    USER_DATA = os.path.join(HOME, ".config", "BanditGameLauncher")
+    PROGRAM_DATA = "/etc/BanditGameLauncher"
 
-legacy_saved_paths = os.path.join(os.path.dirname(os.path.abspath(__file__)), "saved_paths.json")
-installed_games_path = os.path.join(bandit_program_data, "installed_games.json")
+GAMES_FOLDER = "/Applications" if OS == "Darwin" else os.path.join(PROGRAM_DATA, "Games")
+WINDOWS_SUBDIR = os.path.join(PROGRAM_DATA, "Windows")  # Linux only: Windows-build manifests
+PFX_ROOT = os.path.join(HOME, ".banditpfx")  # Proton prefix (Linux)
 
-for old_path in (old_saved_paths, legacy_saved_paths):
-    if os.path.exists(old_path) and not os.path.exists(installed_games_path):
+SETTINGS_PATH = os.path.join(USER_DATA, "settings.json")
+PREREQS_PATH = os.path.join(USER_DATA, "installed_prereqs.json")
+INSTALLED_PATH = os.path.join(PROGRAM_DATA, "installed_games.json")
+
+MP_LABELS = {
+    "0": ("Offline", "Singleplayer or local multiplayer only."),
+    "1": ("LAN", "LAN multiplayer supported."),
+    "2": ("Online · Unofficial", "Unofficial online multiplayer."),
+    "3": ("Online · Anyone", "Online multiplayer with anyone supported."),
+}
+
+
+def resource_path(relative: str) -> str:
+    """Resolve a bundled resource (works in dev and under PyInstaller)."""
+    base = getattr(sys, "_MEIPASS", os.path.abspath("."))
+    return os.path.join(base, relative)
+
+
+def ensure_program_data() -> str | None:
+    """Create the system-wide data folders. Returns an error message on failure."""
+    try:
+        os.makedirs(USER_DATA, exist_ok=True)
+    except OSError as e:
+        return f"Could not create {USER_DATA}: {e}"
+
+    if os.path.isdir(os.path.join(PROGRAM_DATA, "Games")) or (
+        OS == "Darwin" and os.path.isdir(PROGRAM_DATA)
+    ):
+        pass  # already set up
+    elif OS == "Windows":
         try:
-            with open(old_path, "r") as f:
-                saved_paths = json.load(f)
-            with open(installed_games_path, "w") as f:
-                json.dump(saved_paths, f, indent=2)
-            print(f"Migrated old saved paths from {old_path} to {installed_games_path}")
-        except Exception as e:
-            print(f"Warning: failed to migrate old saved paths from {old_path}: {e}")
-        break
+            os.makedirs(os.path.join(PROGRAM_DATA, "Games"), exist_ok=True)
+        except OSError as e:
+            return f"Failed to create {PROGRAM_DATA}: {e}\nTry running Bandit as administrator once."
+    elif OS == "Linux":
+        dirs = [PROGRAM_DATA, os.path.join(PROGRAM_DATA, "Games"), WINDOWS_SUBDIR]
+        script = " && ".join(f"mkdir -p {shlex.quote(d)} && chmod 777 {shlex.quote(d)}" for d in dirs)
+        # One graphical password prompt for everything.
+        subprocess.run(["pkexec", "sh", "-c", script], check=False)
+        if not os.path.isdir(PROGRAM_DATA):
+            return f"Failed to create {PROGRAM_DATA}.\nPlease run Bandit as root or with sudo once."
+    elif OS == "Darwin":
+        q = PROGRAM_DATA.replace('"', '\\"')
+        subprocess.run(
+            ["osascript", "-e",
+             f'do shell script "mkdir -p \\"{q}\\" && chmod -R 777 \\"{q}\\"" with administrator privileges'],
+            check=False,
+        )
+        if not os.path.isdir(PROGRAM_DATA):
+            return f"Failed to create {PROGRAM_DATA}."
 
-# if it doesn't exist, make local file to store installed games in
-try:
-    open(installed_games_path, "r")
-except FileNotFoundError:
-    with open(installed_games_path, "w") as f:
-        f.write('{"Windows": {}, "Linux": {}, "Darwin": {}}')
-
-try:
-    open(f"{bandit_userdata}/installed_prereqs.json", "r")
-except FileNotFoundError:
-    with open(f"{bandit_userdata}/installed_prereqs.json", "w") as f:
-        f.write('{}') # empty json object
-
-# SETTINGS!!!!!!!!!!!!!1
-try:
-    open(f"{bandit_userdata}/settings.json", "r")
-except FileNotFoundError:
-    with open(f"{bandit_userdata}/settings.json", "w") as f:
-        f.write('{"Ask where to install games to": false, "Enable Telemetry": true, "Account name": "", "_first_launch": true}')
-
-# load and apply settings
-def apply_settings():
-    global ask_install_path
-    with open(f"{bandit_userdata}/settings.json", "r") as f:
-        settings = json.load(f)
-        ask_install_path = settings.get("Ask where to install games to", False)
-        print(settings)
+    if OS == "Linux":
+        os.makedirs(WINDOWS_SUBDIR, exist_ok=True)
+        _setup_linux_prefix()
+    elif OS == "Darwin" and not os.access(PROGRAM_DATA, os.W_OK):
+        q = PROGRAM_DATA.replace('"', '\\"')
+        subprocess.run(
+            ["osascript", "-e", f'do shell script "chmod -R 777 \\"{q}\\"" with administrator privileges'],
+            check=False, timeout=30,
+        )
+    return None
 
 
-def get_default_account_name():
+def _setup_linux_prefix() -> None:
+    """Create the Proton prefix skeleton and link the usual user folders into it."""
+    if os.path.exists(PFX_ROOT):
+        return
+    pfxhome = os.path.join(PFX_ROOT, "pfx", "drive_c", "users", "steamuser")
+    appdata = os.path.join(pfxhome, "AppData")
+    os.makedirs(appdata, exist_ok=True)
+    links = [(appdata, os.path.join(HOME, "AppData"))]
+    for name in ("Downloads", "Documents", "Desktop", "Music", "Pictures", "Videos"):
+        links.append((os.path.join(HOME, name), os.path.join(pfxhome, name)))
+    for target, link in links:
+        try:
+            if not os.path.lexists(link):
+                os.symlink(target, link)
+        except OSError:
+            pass
+
+
+# --------------------------------------------------------------------------- #
+# 2. Data layer
+# --------------------------------------------------------------------------- #
+
+def read_json(path: str, default):
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return default
+
+
+def write_json(path: str, data) -> None:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=4)
+    os.replace(tmp, path)
+
+
+def default_account_name() -> str:
     return os.getenv("USER", os.getenv("USERNAME", "unknown"))
 
 
-def write_account_name_files(account_name):
-    if not account_name:
-        return
+class Settings:
+    DEFAULTS = {
+        "Ask where to install games to": False,
+        "Enable Telemetry": True,
+        "Check for updates on startup": True,
+        "UI scale": 125,
+        "Account name": "",
+        "_first_launch": True,
+    }
 
-    target_folders = []
+    def __init__(self) -> None:
+        self.data = dict(self.DEFAULTS)
+        self.data.update(read_json(SETTINGS_PATH, {}))
+        if not os.path.exists(SETTINGS_PATH):
+            self.save()
+
+    def get(self, key, default=None):
+        return self.data.get(key, default)
+
+    def set(self, key, value) -> None:
+        self.data[key] = value
+        self.save()
+
+    def save(self) -> None:
+        write_json(SETTINGS_PATH, self.data)
+
+    @property
+    def account_name(self) -> str:
+        return (self.data.get("Account name") or "").strip() or default_account_name()
+
+
+def write_account_name_files(name: str) -> None:
+    """Games read the player's name from these files."""
+    if not name:
+        return
     if OS == "Windows":
         appdata = os.getenv("APPDATA")
         if not appdata:
             return
-
-        target_folders.extend([
-            os.path.join(appdata, "Goldberg SteamEmu Saves", "settings"),
-            os.path.join(appdata, "Goldberg SocialClub Emu Saves", "settings"),
-        ])
+        folders = [os.path.join(appdata, g, "settings") for g in ("Goldberg SteamEmu Saves", "Goldberg SocialClub Emu Saves")]
     else:
-        home = os.path.expanduser("~")
-        target_folders.extend([
-            os.path.join(home, ".local", "share", "Goldberg SteamEmu Saves", "settings"),
-            os.path.join(home, ".local", "share", "Goldberg SocialClub Emu Saves", "settings"),
-        ])
+        folders = [os.path.join(HOME, ".local", "share", g, "settings") for g in ("Goldberg SteamEmu Saves", "Goldberg SocialClub Emu Saves")]
         if OS == "Linux":
-            target_folders.extend([
-                os.path.join(home, ".banditpfx", "pfx", "drive_c", "users", "steamuser", "AppData", "Roaming", "Goldberg SteamEmu Saves", "settings"),
-                os.path.join(home, ".banditpfx", "pfx", "drive_c", "users", "steamuser", "AppData", "Roaming", "Goldberg SocialClub Emu Saves", "settings"),
-            ])
-
-    for folder_path in target_folders:
+            roaming = os.path.join(PFX_ROOT, "pfx", "drive_c", "users", "steamuser", "AppData", "Roaming")
+            folders += [os.path.join(roaming, g, "settings") for g in ("Goldberg SteamEmu Saves", "Goldberg SocialClub Emu Saves")]
+    for folder in folders:
         try:
-            os.makedirs(folder_path, exist_ok=True)
-            with open(os.path.join(folder_path, "account_name.txt"), "w", encoding="utf-8") as f:
-                f.write(account_name)
-        except Exception as e:
-            print(f"[WARNING] Failed to write account_name.txt to {folder_path}: {e}")
+            os.makedirs(folder, exist_ok=True)
+            with open(os.path.join(folder, "account_name.txt"), "w", encoding="utf-8") as f:
+                f.write(name)
+        except OSError as e:
+            print(f"[WARNING] Could not write account_name.txt to {folder}: {e}")
 
 
-def set_account_name(name):
-    global account_name
-    account_name = name.strip() if name and name.strip() else get_default_account_name()
-
-    try:
-        with open(f"{bandit_userdata}/settings.json", "r") as f:
-            settings = json.load(f)
-    except Exception:
-        settings = {}
-
-    settings["Account name"] = account_name
-    with open(f"{bandit_userdata}/settings.json", "w") as f:
-        json.dump(settings, f, indent=4)
-
-    write_account_name_files(account_name)
+@dataclass
+class Game:
+    id: str
+    name: str
+    size: int | None
+    mp: str = "0"
+    sources: set = field(default_factory=set)  # which platform builds exist: "Linux"/"Windows"/...
+    steam_appid: str | None = None             # optional 5th list.txt field: Steam appid (for artwork)
 
 
-def ensure_account_name():
-    with open(f"{bandit_userdata}/settings.json", "r") as f:
-        settings = json.load(f)
-
-    account_name_value = settings.get("Account name", "").strip()
-    if not account_name_value:
-        prompt = simpledialog.askstring(
-            "Create Username",
-            "Enter a username to use in games (This can be changed anytime in Settings ⚙️):",
-            parent=app,
-        )
-        if prompt is None:
-            prompt = ""
-        set_account_name(prompt)
-    else:
-        set_account_name(account_name_value)
+def _section_dir(section: str) -> str:
+    return WINDOWS_SUBDIR if (section == "Windows" and OS == "Linux") else PROGRAM_DATA
 
 
-apply_settings()
-ensure_account_name()
+def load_catalog() -> dict[str, Game]:
+    games: dict[str, Game] = {}
 
-def send_telemetry(event_type, game_id=None, game_name=None):
-    """Send telemetry event to the telemetry server (non-blocking)"""
-    def task():
-        global account_name
+    def read(path: str, source: str) -> None:
         try:
-            with open(f"{bandit_userdata}/settings.json", "r") as f:
-                settings = json.load(f)
-            
-            if not settings.get("Enable Telemetry", True):
-                return
-            
-            telemetry_data = {
-                "event_type": event_type,
-                "account_name": account_name or settings.get("Account name", "unknown"),
-                "username": os.getenv("USER", os.getenv("USERNAME", "unknown")),
-                "app_version": version,
-                "os": OS,
-            }
-            if game_id:
-                telemetry_data["game_id"] = game_id
-            if game_name:
-                telemetry_data["game_name"] = game_name
-
-            endpoints = [
-                "https://thuis.felixband.nl/api/telemetry",
-                "http://thuis.felixband.nl:5001/api/telemetry"
-            ]
-
-            for url in endpoints:
-                try:
-                    response = requests.post(url, json=telemetry_data, timeout=5)
-                    print(f"[TELEMETRY] Tried {url} - Status: {response.status_code}")
-                    if response.status_code == 200:
-                        return
-                except Exception as e:
-                    print(f"[TELEMETRY] Endpoint failed: {url} -> {type(e).__name__}: {e}")
-                    continue
-
-            print(f"[TELEMETRY ERROR] All telemetry endpoints failed for {event_type}")
-        except Exception as e:
-            print(f"[TELEMETRY ERROR] Failed to send {event_type}: {type(e).__name__}: {e}")
-            import traceback
-            traceback.print_exc()
-    
-    threading.Thread(target=task, daemon=True).start()
-
-def show_telemetry_disclaimer():
-    """Show telemetry disclaimer on first launch"""
-    with open(f"{bandit_userdata}/settings.json", "r") as f:
-        settings = json.load(f)
-    
-    if settings.get("_first_launch", False):
-        result = tk.messagebox.showinfo(
-            "Telemetry Notice",
-            "Bandit collects anonymized telemetry data including:\n"
-            "• Your PC username\n"
-            "• Your IP address\n"
-            "• Which games you download\n\n"
-            "This helps me understand usage patterns.\n\n"
-            "You can disable this anytime in Settings ⚙️"
-        )
-        
-        # Mark first launch as complete
-        settings["_first_launch"] = False
-        with open(f"{bandit_userdata}/settings.json", "w") as f:
-            json.dump(settings, f, indent=4)
-
-def get_mp_icon(status):
-    status = str(status) if status is not None else "0"
-    if status not in {"1", "2", "3"}:
-        status = "0"
-
-    if status in mp_icon_images:
-        return mp_icon_images[status]
-
-    icon_size = globals().get("fontSize", 14) + 20
-
-    for ext in ("svg", "png"):
-        icon_file = resource_path(f"assets/mp{status}.{ext}")
-        if os.path.exists(icon_file):
-            try:
-                img = Image.open(icon_file)
-                img = img.convert("RGBA")
-                img = img.resize((icon_size, icon_size), Image.LANCZOS)
-                photo = ImageTk.PhotoImage(img)
-                mp_icon_images[status] = photo
-                return photo
-            except Exception:
+            with open(path, "r", encoding="utf-8") as f:
+                lines = f.read().splitlines()
+        except OSError:
+            return
+        for line in lines:
+            parts = [p.strip() for p in line.split("|")]
+            if len(parts) < 2 or not parts[0] or not parts[1]:
                 continue
+            name, gid = parts[0], parts[1]
+            size = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else None
+            mp = parts[3] if len(parts) > 3 and parts[3] in MP_LABELS else "0"
+            steam = parts[4] if len(parts) > 4 and parts[4].isdigit() else None
+            if gid in games:
+                games[gid].sources.add(source)
+                if steam and not games[gid].steam_appid:
+                    games[gid].steam_appid = steam
+            else:
+                games[gid] = Game(gid, name, size, mp, {source}, steam)
 
-    mp_icon_images[status] = None
-    return None
-
-def make_installed_games_list():
-    # clear old buttons
-    for btn in installed_game_item_buttons:
-        btn.destroy()
-    installed_game_item_buttons.clear()
-    installed_game_original_indices.clear()
-
-    installed_items = []
-
-    for index, game_id in enumerate(gameIDs):
-        if game_id in installedGames:
-            installed_items.append(
-                (gameNames[index], game_id, index, gameMPstatus[index])
-            )
-
-    # sort alphabetically by name
-    installed_items.sort(key=lambda x: x[0].lower())
-
-    for game_name, game_id, index, mp_status in installed_items:
-
-        mpIcon = get_mp_icon(mp_status)
-        if isinstance(mpIcon, ImageTk.PhotoImage):
-            btn = ctk.CTkButton(
-                installed_games_frame,
-                text=game_name,
-                image=mpIcon,
-                compound="left",
-                anchor="w",
-                fg_color="transparent",
-                text_color="white",
-                hover_color="#355486",
-                command=lambda i=index: select_game(i),
-                font=(listfont, fontSize)
-            )
-        else:
-            btn = ctk.CTkButton(
-                installed_games_frame,
-                text=game_name,
-                anchor="w",
-                fg_color="transparent",
-                text_color="white",
-                hover_color="#355486",
-                command=lambda i=index: select_game(i),
-                font=(listfont, fontSize)
-            )
-        btn.pack(fill="x", pady=2, padx=4)
-        btn.bind("<Button-3>", lambda e, i=index: show_context_menu(e, i))
-        installed_game_item_buttons.append(btn)
-        installed_game_original_indices.append(index)
-
-def refresh_installed_games():
-    global installedGames
-    installedGames = [] # Reset the list so we don't append to old data
-    with open(f"{bandit_program_data}/installed_games.json", "r") as f:
-        installed_games = json.load(f)
-        for game_id in installed_games.get(OS, {}):
-            installedGames.append(game_id)
-
-        if OS == "Linux":
-            for game_id in installed_games.get("Windows", {}):
-                if game_id not in installedGames:
-                    installedGames.append(game_id)
-
-    make_installed_games_list()
-
-def refresh_installed_prereqs():
-    global installedPrereqs
-    installedPrereqs = set()
-    with open(f"{bandit_userdata}/installed_prereqs.json", "r") as f:
-        prereqs = json.load(f)
-        for game_id in prereqs:
-            installedPrereqs.add(game_id)
-
-
-def get_installed_game_info(game_id):
-    with open(f"{bandit_program_data}/installed_games.json", "r") as f:
-        installed_games = json.load(f)
-
-    if game_id in installed_games.get(OS, {}):
-        return OS, installed_games[OS][game_id]
-
+    read(os.path.join(PROGRAM_DATA, "list.txt"), OS)
     if OS == "Linux":
-        if game_id in installed_games.get("Windows", {}):
-            return "Windows", installed_games["Windows"][game_id]
-        if game_id in installed_games.get("Darwin", {}):
-            return "Darwin", installed_games["Darwin"][game_id]
-
-    return None, None
+        read(os.path.join(WINDOWS_SUBDIR, "list.txt"), "Windows")
+    return games
 
 
-def get_executable_json_path(section=None):
-    if section == "Windows" and OS == "Linux":
-        return os.path.join(bandit_program_data, "Windows", "executable_paths.json")
-    return os.path.join(bandit_program_data, "executable_paths.json")
+class Manifest:
+    """Per-platform executable / prerequisite / icon tables."""
+
+    def __init__(self, section: str) -> None:
+        folder = _section_dir(section)
+        self.executables: dict = read_json(os.path.join(folder, "executable_paths.json"), {})
+        self.prereqs: dict = read_json(os.path.join(folder, "prereq_paths.json"), {})
+        self.icons: dict = read_json(os.path.join(folder, "icon_paths.json"), {})
+
+    def first_folder(self, game_id: str) -> str | None:
+        exe = self.executables.get(game_id)
+        return exe.split("/")[0] if exe else None
 
 
-def get_prereq_json_path(section=None):
-    if section == "Windows" and OS == "Linux":
-        return os.path.join(bandit_program_data, "Windows", "prereq_paths.json")
-    return os.path.join(bandit_program_data, "prereq_paths.json")
+class InstalledStore:
+    """installed_games.json: {"Windows": {id: install_dir}, "Linux": {...}, "Darwin": {...}}"""
+
+    def __init__(self) -> None:
+        if not os.path.exists(INSTALLED_PATH):
+            self._migrate_legacy()
+        if not os.path.exists(INSTALLED_PATH):
+            self._write({"Windows": {}, "Linux": {}, "Darwin": {}})
+
+    @staticmethod
+    def _migrate_legacy() -> None:
+        legacy = [
+            os.path.join(USER_DATA, "saved_paths.json"),
+            os.path.join(HOME, ".config", "banditgamelauncher", "saved_paths.json"),
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), "saved_paths.json"),
+        ]
+        for old in legacy:
+            if os.path.exists(old):
+                try:
+                    write_json(INSTALLED_PATH, read_json(old, {}))
+                    return
+                except OSError:
+                    pass
+
+    @staticmethod
+    def _read() -> dict:
+        return read_json(INSTALLED_PATH, {})
+
+    @staticmethod
+    def _write(data: dict) -> None:
+        write_json(INSTALLED_PATH, data)
+
+    @staticmethod
+    def _sections() -> list[str]:
+        return [OS] + (["Windows"] if OS == "Linux" else [])
+
+    def installed_ids(self) -> set[str]:
+        data = self._read()
+        ids: set[str] = set()
+        for s in self._sections():
+            ids.update(data.get(s, {}).keys())
+        return ids
+
+    def find(self, game_id: str) -> tuple[str | None, str | None]:
+        data = self._read()
+        for s in self._sections():
+            path = data.get(s, {}).get(game_id)
+            if path:
+                return s, path
+        return None, None
+
+    def add(self, section: str, game_id: str, path: str) -> None:
+        data = self._read()
+        data.setdefault(section, {})[game_id] = path
+        self._write(data)
+
+    def remove(self, section: str, game_id: str) -> None:
+        data = self._read()
+        data.get(section, {}).pop(game_id, None)
+        self._write(data)
 
 
-def get_icon_json_path(section=None):
-    if section == "Windows" and OS == "Linux":
-        return os.path.join(bandit_program_data, "Windows", "icon_paths.json")
-    return os.path.join(bandit_program_data, "icon_paths.json")
+class PrereqStore:
+    def __init__(self) -> None:
+        self.data: dict = read_json(PREREQS_PATH, {})
+
+    def done(self, game_id: str) -> bool:
+        return bool(self.data.get(game_id))
+
+    def mark(self, game_id: str) -> None:
+        self.data[game_id] = True
+        write_json(PREREQS_PATH, self.data)
+
+    def clear(self, game_id: str) -> None:
+        if self.data.pop(game_id, None) is not None:
+            write_json(PREREQS_PATH, self.data)
 
 
-def get_first_folder_in_executable_path(game_id, section=None):
-    with open(get_executable_json_path(section), "r") as f:
-        executable_paths = json.load(f)
-        exec_path = executable_paths[game_id]
-        first_folder = exec_path.split("/")[0]
-        return first_folder
+META_PATH = os.path.join(USER_DATA, "library.json")
 
 
-def resolve_icon_path(game_id, install_path, section=None):
-    try:
-        with open(get_icon_json_path(section), "r") as f:
-            icon_paths = json.load(f)
-        if game_id in icon_paths:
-            icon_rel = icon_paths[game_id].lstrip('/')
-            return os.path.join(install_path, icon_rel)
-    except Exception:
-        pass
+class UserMeta:
+    """Per-user extras: favorites, playtime, last played, launch options."""
+
+    def __init__(self) -> None:
+        d = read_json(META_PATH, {})
+        self.favorites: set[str] = set(d.get("favorites", []))
+        self.playtime: dict[str, int] = {k: int(v) for k, v in d.get("playtime", {}).items()}
+        self.last_played: dict[str, int] = {k: int(v) for k, v in d.get("last_played", {}).items()}
+        self.launch_args: dict[str, str] = dict(d.get("launch_args", {}))
+
+    def save(self) -> None:
+        try:
+            write_json(META_PATH, {
+                "favorites": sorted(self.favorites),
+                "playtime": self.playtime,
+                "last_played": self.last_played,
+                "launch_args": self.launch_args,
+            })
+        except OSError as e:
+            print(f"[WARNING] Could not save {META_PATH}: {e}")
+
+
+def dir_size(path: str) -> int:
+    total = 0
+    for root, _dirs, files in os.walk(path):
+        for f in files:
+            try:
+                total += os.path.getsize(os.path.join(root, f))
+            except OSError:
+                pass
+    return total
+
+
+def sync_library() -> None:
+    """Fetch the latest catalog + manifests. Raises on failure (caller keeps the cached copy)."""
+    jobs = [(OS, PROGRAM_DATA)]
+    if OS == "Linux":
+        jobs.append(("Windows", WINDOWS_SUBDIR))
+    for remote_os, folder in jobs:
+        os.makedirs(folder, exist_ok=True)
+        for name in ("list.txt", "executable_paths.json", "prereq_paths.json", "icon_paths.json"):
+            r = requests.get(f"{BASE_URL}/{remote_os}/{name}", timeout=15)
+            r.raise_for_status()
+            dest = os.path.join(folder, name)
+            tmp = dest + ".tmp"
+            with open(tmp, "wb") as f:
+                f.write(r.content)
+            os.replace(tmp, dest)
+
+
+# --------------------------------------------------------------------------- #
+# 3. Background workers
+# --------------------------------------------------------------------------- #
+
+class _Cancelled(Exception):
+    pass
+
+
+def format_size(n: int | None) -> str:
+    if n is None:
+        return "Unknown size"
+    if n >= 1_000_000_000:
+        return f"{n / 1_000_000_000:.2f} GB"
+    if n >= 1_000_000:
+        return f"{n / 1_000_000:.2f} MB"
+    if n >= 1_000:
+        return f"{n / 1_000:.2f} KB"
+    return f"{n} bytes"
+
+
+def format_speed(bps: float) -> str:
+    kb = bps / 1024
+    return f"{kb / 1024:.2f} MB/s" if kb >= 1024 else f"{kb:.1f} KB/s"
+
+
+def format_eta(sec: float) -> str:
+    if sec >= 3600:
+        return f"{int(sec // 3600)} h {int(sec % 3600 // 60)} min remaining"
+    if sec >= 60:
+        return f"{int(sec // 60)} min remaining"
+    return "Less than a minute remaining"
+
+
+class _ProgressStream:
+    """File-like wrapper that reports bytes read and honours cancellation."""
+
+    def __init__(self, raw, on_bytes, cancel_event: threading.Event) -> None:
+        self.raw, self.on_bytes, self.cancel = raw, on_bytes, cancel_event
+
+    def read(self, size=-1):
+        if self.cancel.is_set():
+            raise _Cancelled()
+        data = self.raw.read(size)
+        if self.cancel.is_set():
+            raise _Cancelled()
+        if data:
+            self.on_bytes(len(data))
+        return data
+
+    def readable(self) -> bool:
+        return True
+
+
+def _extract_member(tar: tarfile.TarFile, member: tarfile.TarInfo, dest: str) -> None:
+    real_dest = os.path.realpath(dest)
+    target = os.path.realpath(os.path.join(dest, member.name))
+    if target != real_dest and not target.startswith(real_dest + os.sep):
+        raise RuntimeError(f"Unsafe path in archive: {member.name}")
+    if hasattr(tarfile, "tar_filter"):
+        tar.extract(member, dest, filter="tar")
+    else:
+        tar.extract(member, dest)
+
+
+class DownloadWorker(QThread):
+    """Streams a .tar.gz and extracts it on the fly.
+
+    If `fixed_folder` is set, the archive is unpacked to a temp dir and its content is
+    moved into `<dest>/<fixed_folder>` (used for Proton-GE).
+    """
+
+    progress = pyqtSignal(float, str)   # fraction 0..1, status text
+    result = pyqtSignal(bool, str)      # ok, "" | "cancelled" | error message
+
+    def __init__(self, url, dest: str, label: str, fixed_folder: str | None = None, parent=None):
+        super().__init__(parent)
+        self.url, self.dest, self.label, self.fixed_folder = url, dest, label, fixed_folder
+        self._cancel = threading.Event()
+        self._downloaded = 0
+        self._total = 0
+        self._t0 = 0.0
+        self._last_emit = 0.0
+        self._last_pct = -1
+
+    def cancel(self) -> None:
+        self._cancel.set()
+
+    def _on_bytes(self, n: int) -> None:
+        self._downloaded += n
+        now = time.time()
+        if not self._total:
+            if now - self._last_emit >= 0.25:
+                self._last_emit = now
+                self.progress.emit(0.0, f"Downloading {self.label}: {format_size(self._downloaded)}")
+            return
+        frac = self._downloaded / self._total
+        pct = int(frac * 100)
+        if pct != self._last_pct or now - self._last_emit >= 0.25:
+            self._last_pct, self._last_emit = pct, now
+            speed = self._downloaded / max(now - self._t0, 0.001)
+            eta = (self._total - self._downloaded) / speed if speed > 0 else 0
+            self.progress.emit(
+                min(frac, 1.0),
+                f"Downloading {self.label}: {frac * 100:.1f}%\n{format_speed(speed)} • {format_eta(eta)}",
+            )
+
+    def run(self) -> None:
+        try:
+            url = self.url() if callable(self.url) else self.url
+            self._t0 = time.time()
+            with requests.get(url, stream=True, timeout=(15, 120)) as r:
+                r.raise_for_status()
+                self._total = int(r.headers.get("Content-Length") or 0)
+                stream = _ProgressStream(r.raw, self._on_bytes, self._cancel)
+                with tarfile.open(fileobj=stream, mode="r|gz") as tar:
+                    if self.fixed_folder:
+                        self._extract_fixed(tar)
+                    else:
+                        self._extract(tar, self.dest)
+            self.result.emit(True, "")
+        except _Cancelled:
+            self.result.emit(False, "cancelled")
+        except Exception as e:  # noqa: BLE001
+            self.result.emit(False, str(e))
+
+    @staticmethod
+    def _extract(tar: tarfile.TarFile, dest: str) -> set[str]:
+        os.makedirs(dest, exist_ok=True)
+        roots: set[str] = set()
+        for member in tar:
+            _extract_member(tar, member, dest)
+            top = member.name.lstrip("./").split("/", 1)[0]
+            if top:
+                roots.add(top)
+        return roots
+
+    def _extract_fixed(self, tar: tarfile.TarFile) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            roots = self._extract(tar, tmp)
+            src = os.path.join(tmp, next(iter(roots))) if len(roots) == 1 and \
+                os.path.isdir(os.path.join(tmp, next(iter(roots)))) else tmp
+            target = os.path.join(self.dest, self.fixed_folder)
+            if os.path.exists(target):
+                shutil.rmtree(target)
+            os.makedirs(target, exist_ok=True)
+            for item in os.listdir(src):
+                shutil.move(os.path.join(src, item), os.path.join(target, item))
+
+
+class TaskWorker(QThread):
+    """Run any callable off the UI thread."""
+
+    done = pyqtSignal(object, object)  # (result, exception)
+
+    def __init__(self, fn, parent=None) -> None:
+        super().__init__(parent)
+        self.fn = fn
+
+    def run(self) -> None:
+        try:
+            self.done.emit(self.fn(), None)
+        except Exception as e:  # noqa: BLE001
+            self.done.emit(None, e)
+
+
+# --------------------------------------------------------------------------- #
+# 4. Platform helpers
+# --------------------------------------------------------------------------- #
+
+def send_telemetry(settings: Settings, event: str, game: Game | None = None) -> None:
+    if not settings.get("Enable Telemetry", True):
+        return
+    payload = {
+        "event_type": event,
+        "account_name": settings.account_name,
+        "username": default_account_name(),
+        "app_version": VERSION,
+        "os": OS,
+    }
+    if game:
+        payload["game_id"], payload["game_name"] = game.id, game.name
+
+    def post() -> None:
+        for url in TELEMETRY_ENDPOINTS:
+            try:
+                if requests.post(url, json=payload, timeout=5).status_code == 200:
+                    return
+            except requests.RequestException as e:
+                print(f"[TELEMETRY] {url} failed: {type(e).__name__}: {e}")
+        print(f"[TELEMETRY] all endpoints failed for {event}")
+
+    threading.Thread(target=post, daemon=True).start()
+
+
+def latest_proton_ge_url() -> str:
+    r = requests.get(PROTON_API, timeout=15)
+    r.raise_for_status()
+    for asset in r.json().get("assets", []):
+        if asset.get("name", "").endswith(".tar.gz"):
+            return asset["browser_download_url"]
+    raise RuntimeError("No Proton-GE tar.gz asset found on the latest release.")
+
+
+def game_last_updated(game: Game) -> int | None:
+    timestamps = []
+    failures = []
+    for source in sorted(game.sources):
+        try:
+            response = requests.head(f"{BASE_URL}/{source}/{game.id}.tar.gz", timeout=10)
+            response.raise_for_status()
+        except requests.RequestException as e:
+            failures.append(f"{source}: {e}")
+            continue
+
+        modified = response.headers.get("Last-Modified")
+        if not modified:
+            continue
+        try:
+            parsed = parsedate_to_datetime(modified)
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            timestamps.append(int(parsed.timestamp()))
+        except (TypeError, ValueError, OverflowError) as e:
+            failures.append(f"{source}: invalid Last-Modified header ({e})")
+
+    if timestamps:
+        return max(timestamps)
+    if failures:
+        raise RuntimeError("; ".join(failures))
     return None
 
 
-def _download_tar_from_response(response, destination, display_name):
-    total_size = int(response.headers.get("Content-Length", 0))
-    downloaded = 0
-    start_time = time.time()
-
-    last_ui_update = 0.0
-    last_ui_percent = -1
-
-    def should_update_ui(percent, now):
-        nonlocal last_ui_update, last_ui_percent
-        percent_int = int(percent)
-        if percent_int != last_ui_percent:
-            last_ui_percent = percent_int
-            last_ui_update = now
-            return True
-        if now - last_ui_update >= 0.2:
-            last_ui_update = now
-            return True
-        return False
-
-    class ProgressFile:
-        def __init__(self, raw):
-            self.raw = raw
-
-        def read(self, size=-1):
-            nonlocal downloaded
-            global currently_downloading
-
-            if not currently_downloading:
-                raise Exception("Download cancelled")
-
-            data = self.raw.read(size)
-
-            if not currently_downloading:
-                raise Exception("Download cancelled")
-
-            if data:
-                downloaded += len(data)
-
-                elapsed = time.time() - start_time
-                speed = downloaded / max(elapsed, 0.001)
-
-                if total_size:
-                    percent = (downloaded / total_size) * 100
-                    remaining = total_size - downloaded
-                    eta = remaining / speed if speed > 0 else 0
-
-                    speed_kb = speed / 1024
-                    speed_mb = speed_kb / 1024
-                    if speed_mb >= 1:
-                        speed_str = f"{speed_mb:.2f} MB/s"
-                    else:
-                        speed_str = f"{speed_kb:.2f} KB/s"
-
-                    if eta > 3600:
-                        eta_str = time.strftime("%H hour(s) and %M minutes remaining", time.gmtime(eta))
-                    elif eta > 60:
-                        eta_str = time.strftime(str(int(eta / 60)) + " minute(s) remaining", time.gmtime(eta))
-                    else:
-                        eta_str = time.strftime("Less than a minute remaining", time.gmtime(eta))
-
-                    print(
-                        f"\rDownloading {display_name}: {percent:.2f}% | {speed_str} | ETA: {eta_str}",
-                        end=""
-                    )
-
-                    now = time.time()
-                    if should_update_ui(percent, now):
-                        def update_ui():
-                            progressBar.set(percent / 100)
-                            infoLabel.configure(
-                                text=f"Downloading {display_name}: {percent:.2f}%\n{speed_str} • ETA {eta_str}"
-                            )
-
-                        app.after(0, update_ui)
-                else:
-                    print(f"\rDownloading {display_name}: {downloaded} bytes", end="")
-
-            return data
-
-        def readable(self):
-            return True
-
-    wrapped = ProgressFile(response.raw)
-    with tarfile.open(fileobj=wrapped, mode="r|gz") as tar:
-        tar.extractall(path=destination)
-
-    print(f"\n{display_name} installed successfully.")
-
-    def finish_ui():
-        progressBar.set(0)
-        infoLabel.configure(text="Download complete!")
-
-    app.after(0, finish_ui)
-    return True
-
-
-def download_tar_url(url, destination, display_name="download"):
-    global currently_downloading
-    currently_downloading = True
-
-    try:
-        with requests.get(url, stream=True, timeout=None) as response:
-            response.raise_for_status()
-            return _download_tar_from_response(response, destination, display_name)
-    except Exception as e:
-        if str(e) == "Download cancelled":
-            print("\nDownload cancelled.")
-
-            def cancel_ui():
-                progressBar.set(0)
-                infoLabel.configure(text="Download cancelled.")
-
-            app.after(0, cancel_ui)
-            return False
-        else:
-            print(f"\nFailed to install {display_name}: {e}")
-
-            def fail_ui():
-                progressBar.set(0)
-                infoLabel.configure(text="Download failed.")
-
-            app.after(0, fail_ui)
-            return False
-    finally:
-        currently_downloading = False
-
-
-def get_latest_proton_ge_tarball_url():
-    api_url = "https://api.github.com/repos/GloriousEggroll/proton-ge-custom/releases/latest"
-    response = requests.get(api_url, timeout=10)
-    response.raise_for_status()
-    release = response.json()
-
-    for asset in release.get("assets", []):
-        name = asset.get("name", "")
-        if name.endswith(".tar.gz"):
-            return asset.get("browser_download_url")
-
-    raise Exception("No Proton-GE tar.gz asset found on the latest release.")
-
-
-def extract_tarball_to_fixed_folder(response, destination, fixed_name):
-    with tempfile.TemporaryDirectory() as temp_dir:
-        wrapped = response.raw
-        with tarfile.open(fileobj=wrapped, mode="r|gz") as tar:
-            tar.extractall(path=temp_dir)
-            members = [m.name for m in tar.getmembers() if m.name and not m.name.startswith(".")]
-
-        root_parts = [m.split("/", 1)[0] for m in members if "/" in m]
-        root_dirs = [p for p in sorted(set(root_parts)) if p]
-
-        if len(root_dirs) == 1:
-            src_dir = os.path.join(temp_dir, root_dirs[0])
-        else:
-            src_dir = temp_dir
-
-        target_dir = os.path.join(destination, fixed_name)
-        if os.path.exists(target_dir):
-            shutil.rmtree(target_dir)
-        os.makedirs(target_dir, exist_ok=True)
-
-        for item in os.listdir(src_dir):
-            shutil.move(os.path.join(src_dir, item), os.path.join(target_dir, item))
-
-    return target_dir
-
-
-def download_proton_ge(destination=None):
-    destination = destination or bandit_program_data
-    url = get_latest_proton_ge_tarball_url()
-
-    global currently_downloading
-    currently_downloading = True
-
-    try:
-        with requests.get(url, stream=True, timeout=None) as response:
-            response.raise_for_status()
-
-            total_size = int(response.headers.get("Content-Length", 0))
-            downloaded = 0
-            start_time = time.time()
-
-            last_ui_update = 0.0
-            last_ui_percent = -1
-
-            def should_update_ui(percent, now):
-                nonlocal last_ui_update, last_ui_percent
-                percent_int = int(percent)
-                if percent_int != last_ui_percent:
-                    last_ui_percent = percent_int
-                    last_ui_update = now
-                    return True
-                if now - last_ui_update >= 0.2:
-                    last_ui_update = now
-                    return True
-                return False
-
-            class ProgressFile:
-                def __init__(self, raw):
-                    self.raw = raw
-
-                def read(self, size=-1):
-                    nonlocal downloaded
-                    global currently_downloading
-
-                    if not currently_downloading:
-                        raise Exception("Download cancelled")
-
-                    data = self.raw.read(size)
-
-                    if not currently_downloading:
-                        raise Exception("Download cancelled")
-
-                    if data:
-                        downloaded += len(data)
-
-                        elapsed = time.time() - start_time
-                        speed = downloaded / max(elapsed, 0.001)
-
-                        if total_size:
-                            percent = (downloaded / total_size) * 100
-                            remaining = total_size - downloaded
-                            eta = remaining / speed if speed > 0 else 0
-
-                            speed_kb = speed / 1024
-                            speed_mb = speed_kb / 1024
-                            if speed_mb >= 1:
-                                speed_str = f"{speed_mb:.2f} MB/s"
-                            else:
-                                speed_str = f"{speed_kb:.2f} KB/s"
-
-                            if eta > 3600:
-                                eta_str = time.strftime("%H hour(s) and %M minutes remaining", time.gmtime(eta))
-                            elif eta > 60:
-                                eta_str = time.strftime(str(int(eta / 60)) + " minute(s) remaining", time.gmtime(eta))
-                            else:
-                                eta_str = time.strftime("Less than a minute remaining", time.gmtime(eta))
-
-                            print(
-                                f"\rDownloading Proton-GE: {percent:.2f}% | {speed_str} | ETA: {eta_str}",
-                                end=""
-                            )
-
-                            now = time.time()
-                            if should_update_ui(percent, now):
-                                def update_ui():
-                                    progressBar.set(percent / 100)
-                                    infoLabel.configure(
-                                        text=f"Downloading Proton-GE: {percent:.2f}%\n{speed_str} • ETA {eta_str}"
-                                    )
-
-                                app.after(0, update_ui)
-                        else:
-                            print(f"\rDownloading Proton-GE: {downloaded} bytes", end="")
-
-                    return data
-
-                def readable(self):
-                    return True
-
-            wrapped = ProgressFile(response.raw)
-            with tarfile.open(fileobj=wrapped, mode="r|gz") as tar:
-                with tempfile.TemporaryDirectory() as temp_dir:
-                    tar.extractall(path=temp_dir)
-                    members = [m.name for m in tar.getmembers() if m.name and not m.name.startswith(".")]
-
-                    root_parts = [m.split("/", 1)[0] for m in members if "/" in m]
-                    root_dirs = [p for p in sorted(set(root_parts)) if p]
-
-                    if len(root_dirs) == 1:
-                        src_dir = os.path.join(temp_dir, root_dirs[0])
-                    else:
-                        src_dir = temp_dir
-
-                    target_dir = os.path.join(destination, "Proton-GE")
-                    if os.path.exists(target_dir):
-                        shutil.rmtree(target_dir)
-                    os.makedirs(target_dir, exist_ok=True)
-
-                    for item in os.listdir(src_dir):
-                        shutil.move(os.path.join(src_dir, item), os.path.join(target_dir, item))
-
-        print("\nProton-GE installed successfully.")
-        send_telemetry("proton_ge_installed")
-
-        def finish_ui():
-            progressBar.set(0)
-            infoLabel.configure(text="Proton-GE download complete!")
-
-        app.after(0, finish_ui)
-        return True
-    except Exception as e:
-        if str(e) == "Download cancelled":
-            print("\nDownload cancelled.")
-
-            def cancel_ui():
-                progressBar.set(0)
-                infoLabel.configure(text="Download cancelled.")
-
-            app.after(0, cancel_ui)
-            return False
-        else:
-            print(f"\nFailed to install Proton-GE: {e}")
-
-            def fail_ui():
-                progressBar.set(0)
-                infoLabel.configure(text="Download failed.")
-
-            app.after(0, fail_ui)
-            return False
-    finally:
-        currently_downloading = False
-
-
-def find_proton_binary():
-    proton_dir = os.path.join(bandit_program_data, "Proton-GE")
-    candidates = [
-        os.path.join(proton_dir, "proton"),
-        os.path.join(proton_dir, "dist", "proton"),
-        os.path.join(proton_dir, "bin", "proton")
-    ]
-    for candidate in candidates:
-        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
-            return candidate
+def find_proton_binary() -> str | None:
+    root = os.path.join(PROGRAM_DATA, "Proton-GE")
+    for rel in ("proton", os.path.join("dist", "proton"), os.path.join("bin", "proton")):
+        path = os.path.join(root, rel)
+        if os.path.isfile(path) and os.access(path, os.X_OK):
+            return path
     return None
 
 
-def ensure_proton_installed():
-    global currently_downloading, currently_downloading_game
-
-    if find_proton_binary():
-        return True
-
-    if currently_downloading:
-        tk.messagebox.showinfo(
-            "Download in progress",
-            "Please wait until the current download is complete before launching a Windows game."
-        )
-        return False
-
-    if not tk.messagebox.askyesno(
-        "Download Proton-GE?",
-        "This game requires Proton-GE to run on Linux. Download the latest Proton-GE release now?"
-    ):
-        return False
-
-    def proton_task():
-        global currently_downloading, currently_downloading_game
-        currently_downloading_game = None
-        download_proton_ge()
-        if selected_game is not None:
-            app.after(0, lambda: select_game(selected_game))
-
-    threading.Thread(target=proton_task, daemon=True).start()
-    return False
-
-
-def run_with_proton(executable_path, working_dir):
-    proton_binary = find_proton_binary()
-    if not proton_binary:
-        if not ensure_proton_installed():
-            return False
-        proton_binary = find_proton_binary()
-        if not proton_binary:
-            tk.messagebox.showerror("Error", "Unable to locate the Proton-GE binary after download.")
-            return False
-
+def proton_env() -> dict:
     env = os.environ.copy()
-    compat_path = os.path.expanduser("~/.banditpfx")
-    env["STEAM_COMPAT_DATA_PATH"] = compat_path
-    env["STEAM_COMPAT_CLIENT_INSTALL_PATH"] = compat_path
+    env["STEAM_COMPAT_DATA_PATH"] = PFX_ROOT
+    env["STEAM_COMPAT_CLIENT_INSTALL_PATH"] = PFX_ROOT
     env["WINEDLLOVERRIDES"] = "dinput8,winhttp,winmm=n,b"
+    return env
 
-    try:
-        return subprocess.Popen([proton_binary, "run", executable_path], cwd=working_dir, env=env)
-    except Exception as e:
-        tk.messagebox.showerror("Error", f"Failed to launch with Proton: {e}")
+
+def version_tuple(tag: str) -> tuple[int, ...]:
+    return tuple(int(x) for x in re.findall(r"\d+", tag)) or (0,)
+
+
+def sanitize_filename(name: str) -> str:
+    return "".join(c for c in name if c.isalnum() or c in " -_").rstrip()
+
+
+def desktop_path() -> str:
+    if OS == "Windows":
+        try:
+            from ctypes import create_unicode_buffer, windll, wintypes
+            buf = create_unicode_buffer(wintypes.MAX_PATH)
+            windll.shell32.SHGetFolderPathW(None, 0x10, None, 0, buf)
+            if os.path.isdir(buf.value):
+                return buf.value
+        except Exception:  # noqa: BLE001
+            pass
+    return os.path.join(HOME, "Desktop")
+
+
+def remove_desktop_shortcut(display_name: str) -> None:
+    desk, safe = desktop_path(), sanitize_filename(display_name)
+    if OS == "Windows":
+        names = [f"{safe}.lnk", f"{safe}.url", f"{display_name}.lnk", f"{display_name}.url"]
+    elif OS == "Darwin":
+        names = [safe, display_name]
+    else:
+        names = [f"{safe}.desktop", f"{display_name}.desktop"]
+    for n in names:
+        try:
+            p = os.path.join(desk, n)
+            if os.path.exists(p):
+                os.remove(p)
+        except OSError:
+            pass
+
+
+def create_desktop_shortcut(display_name: str, exe: str, icon: str | None, via_proton: bool) -> None:
+    """Raises on failure."""
+    desk, safe = desktop_path(), sanitize_filename(display_name)
+    os.makedirs(desk, exist_ok=True)
+
+    if OS == "Windows":
+        try:
+            from win32com.client import Dispatch  # optional
+            sc = Dispatch("WScript.Shell").CreateShortCut(os.path.join(desk, f"{safe}.lnk"))
+            sc.Targetpath = exe
+            sc.WorkingDirectory = os.path.dirname(exe)
+            sc.IconLocation = icon or exe
+            sc.save()
+        except Exception:  # noqa: BLE001
+            with open(os.path.join(desk, f"{safe}.url"), "w", encoding="utf-8") as f:
+                f.write("[InternetShortcut]\nURL=file:///" + exe.replace("\\", "/") + "\n")
+                f.write(f"IconFile={icon or exe}\nIconIndex=0\n")
+    elif OS == "Darwin":
+        script = (
+            f'tell application "Finder" to make alias file to (POSIX file "{exe}") '
+            f'at (POSIX file "{desk}") with properties {{name:"{safe}"}}'
+        )
+        subprocess.run(["osascript", "-e", script], check=False)
+        if icon:
+            subprocess.run(["osascript", "-e", (
+                f'set src to POSIX file "{icon}"\n'
+                f'set dst to POSIX file "{os.path.join(desk, safe)}"\n'
+                'tell application "Finder" to set icon of dst to icon of src')], check=False)
+    else:
+        if via_proton:
+            proton = find_proton_binary() or "proton"
+            exec_line = (f'env "STEAM_COMPAT_DATA_PATH={PFX_ROOT}" '
+                         f'"STEAM_COMPAT_CLIENT_INSTALL_PATH={PFX_ROOT}" '
+                         f'"WINEDLLOVERRIDES=dinput8,winhttp,winmm=n,b" "{proton}" run "{exe}"')
+        else:
+            exec_line = f'"{exe}"'
+        path = os.path.join(desk, f"{safe}.desktop")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("\n".join([
+                "[Desktop Entry]", f"Name={display_name}", f"Exec={exec_line}",
+                "Type=Application", f"Path={os.path.dirname(exe)}",
+                f"Icon={icon or os.path.splitext(exe)[0]}", "Terminal=false",
+            ]))
+        try:
+            os.chmod(path, 0o755)
+        except OSError:
+            pass
+
+
+# --------------------------------------------------------------------------- #
+# 5. UI  (stock Qt widgets only: the look comes from the user's OS / Qt style)
+# --------------------------------------------------------------------------- #
+
+C_FAV, C_NAME, C_STATUS, C_SIZE, C_MP, C_LAST, C_TIME = range(7)
+HEADERS = ["", "Name", "Status", "Size", "Multiplayer", "Last Played", "Play Time"]
+
+ROLE_ID = Qt.ItemDataRole.UserRole + 1
+ROLE_SORT = Qt.ItemDataRole.UserRole + 2
+ROLE_INSTALLED = Qt.ItemDataRole.UserRole + 3
+ROLE_FAV = Qt.ItemDataRole.UserRole + 4
+ROLE_RECENT = Qt.ItemDataRole.UserRole + 5
+ROLE_MP = Qt.ItemDataRole.UserRole + 6
+
+SHOW_FILTERS = [
+    ("all", "All Games"),
+    ("installed", "Installed"),
+    ("favorites", "Favorites"),
+    ("recent", "Recently Played"),
+]
+
+
+def format_playtime(seconds: int) -> str:
+    if seconds <= 0:
+        return "—"
+    if seconds < 60:
+        return "< 1 min"
+    h, m = divmod(seconds // 60, 60)
+    return f"{h} h {m} min" if h else f"{m} min"
+
+
+def format_when(ts: int) -> str:
+    if not ts:
+        return "Never"
+    return QLocale().toString(QDateTime.fromSecsSinceEpoch(int(ts)), QLocale.FormatType.ShortFormat)
+
+
+@dataclass
+class Job:
+    game: Game
+    source: str
+    dest: str
+    folder: str | None
+    preexisting: bool
+    repair: bool = False
+
+
+# ---- artwork ---------------------------------------------------------------
+
+ART_HOSTS = ("https://cdn.cloudflare.steamstatic.com", "https://steamcdn-a.akamaihd.net")
+ART_FILES = {                       # kind -> candidate file names on the CDN (first hit wins)
+    "header": ["header.jpg"],       # 460x215 capsule, also used (cropped) as the list icon
+    "hero": ["library_hero.jpg", "header.jpg"],
+    "logo": ["logo.png"],
+}
+ART_EXT = {"header": "jpg", "hero": "jpg", "logo": "png"}
+ART_MISSING_TTL = 7 * 24 * 3600     # don't re-ask the CDN for art it said doesn't exist
+
+
+class _ArtSignals(QObject):
+    done = pyqtSignal(str, str, bool)
+
+
+class _ArtJob(QRunnable):
+    def __init__(self, appid: str, kind: str, dest: str, signals: _ArtSignals) -> None:
+        super().__init__()
+        self.appid, self.kind, self.dest, self.signals = appid, kind, dest, signals
+
+    def run(self) -> None:
+        ok, definitive_missing = False, True
+        for fname in ART_FILES[self.kind]:
+            for host in ART_HOSTS:
+                try:
+                    r = requests.get(f"{host}/steam/apps/{self.appid}/{fname}", timeout=10)
+                except requests.RequestException:
+                    definitive_missing = False
+                    continue
+                if r.status_code == 200 and r.content:
+                    try:
+                        os.makedirs(os.path.dirname(self.dest), exist_ok=True)
+                        tmp = self.dest + ".tmp"
+                        with open(tmp, "wb") as f:
+                            f.write(r.content)
+                        os.replace(tmp, self.dest)
+                        ok = True
+                    except OSError:
+                        definitive_missing = False
+                    break
+                if r.status_code == 404:
+                    break               # authoritative: the other host won't have it either
+                definitive_missing = False
+            if ok:
+                break
+        if not ok and definitive_missing:
+            try:
+                os.makedirs(os.path.dirname(self.dest), exist_ok=True)
+                open(self.dest + ".missing", "w").close()
+            except OSError:
+                pass
+        self.signals.done.emit(self.appid, self.kind, ok)
+
+
+class ArtworkManager(QObject):
+    """Disk-cached Steam artwork. get() never blocks: it returns a pixmap if it has one,
+    otherwise None and fetches in the background, then emits ready(appid, kind)."""
+
+    ready = pyqtSignal(str, str)
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.dir = os.path.join(USER_DATA, "artwork")
+        self.mem: dict[tuple[str, str], QPixmap] = {}
+        self.pending: set[tuple[str, str]] = set()
+        self.failed: set[tuple[str, str]] = set()
+        self.pool = QThreadPool(self)
+        self.pool.setMaxThreadCount(4)
+        self.signals = _ArtSignals(self)
+        self.signals.done.connect(self._done)
+
+    def path(self, appid: str, kind: str) -> str:
+        return os.path.join(self.dir, appid, f"{kind}.{ART_EXT[kind]}")
+
+    def get(self, appid: str, kind: str) -> QPixmap | None:
+        key = (appid, kind)
+        if key in self.mem:
+            return self.mem[key]
+        p = self.path(appid, kind)
+        if os.path.exists(p):
+            pm = QPixmap(p)
+            if not pm.isNull():
+                self.mem[key] = pm
+                return pm
+            try:
+                os.remove(p)            # corrupt download: fetch again
+            except OSError:
+                pass
+        if key in self.pending or key in self.failed:
+            return None
+        try:
+            if time.time() - os.path.getmtime(p + ".missing") < ART_MISSING_TTL:
+                return None
+        except OSError:
+            pass
+        self.pending.add(key)
+        self.pool.start(_ArtJob(appid, kind, p, self.signals))
         return None
 
-
-def tick_box(setting, value):
-    with open(f"{bandit_userdata}/settings.json", "r") as f:
-        settings = json.load(f)
-
-    settings[setting] = value  # update the changed setting
-
-    with open(f"{bandit_userdata}/settings.json", "w") as f:
-        json.dump(settings, f, indent=4)
-
-    print(f"{setting} set to {value}")
-
-settings_window = None
-settings_account_name_var = None
-
-def settings_clicked():
-    global settings_window, settings_account_name_var
-    settings_account_name_var = None
-    if settings_window is not None and settings_window.winfo_exists():
-        settings_window.lift()
-        settings_window.focus_force()
-        return
-
-    settings_window = ctk.CTkToplevel(app)
-    settings_window.title("Bandit Settings")
-    settings_window.transient(app)  # Make it modal and always on top
-    settings_window.attributes('-topmost', True)  # Force window to top on all platforms
-    settings_window.protocol(
-        "WM_DELETE_WINDOW",
-        lambda: settings_closed(settings_window))
-    with open(f"{bandit_userdata}/settings.json", "r") as f:
-        settings = json.load(f)
-    vars = {}
-    for preference, value in settings.items():
-        # Skip internal flags (starting with _)
-        if preference.startswith("_"):
-            continue
-
-        if preference == "Account name":
-            settings_account_name_var = tk.StringVar(value=value)
-            label = ctk.CTkLabel(settings_window, text="Username")
-            label.pack(padx=20, pady=(20, 4), anchor="w")
-            entry = ctk.CTkEntry(settings_window, textvariable=settings_account_name_var, width=300)
-            entry.pack(padx=20, pady=(0, 10))
-            continue
-
-        var = tk.BooleanVar(value=value)
-        vars[preference] = var
-
-        checkbox = ctk.CTkCheckBox(
-            master=settings_window,
-            text=preference,
-            variable=var,
-            command=lambda p=preference, v=var: tick_box(p, v.get())
-        )
-        checkbox.pack(padx=20, pady=10)
-
-def settings_closed(window):
-    global settings_window, settings_account_name_var
-    print('apply settings')
-    if settings_account_name_var is not None:
-        set_account_name(settings_account_name_var.get())
-    apply_settings()
-    window.destroy()
-    settings_window = None
-
-settingsButton = ctk.CTkButton(app,
-    text="⚙️", width=40, height=40, fg_color="#5F5F5F", command=settings_clicked)
-
-settingsButton.pack(pady=0, anchor="ne")
-
-if OS == "Darwin":
-    fontSize = 14
-else:
-    fontSize = 12
-
-if OS == "Windows":
-    listfont = "Segoe UI"
-else:
-    listfont = None
-
-# Game list: replace native Listbox with a CustomTkinter scrollable frame
-# Each game will be a selectable `CTkButton` inside the scrollable frame.
-tabview = ctk.CTkTabview(app)
-tabview.pack(fill="both", expand=True, padx=10, pady=10)
-tabview.add("All Games")
-tabview.add("Installed")
-
-game_list_frame = ctk.CTkScrollableFrame(tabview.tab("All Games"))
-game_list_frame.pack(fill="both", expand=True)
-
-installed_games_frame = ctk.CTkScrollableFrame(tabview.tab("Installed"))
-installed_games_frame.pack(fill="both", expand=True)
-
-def _on_mousewheel(event):
-    # Ignore horizontal/shift-based scroll events that can come from macOS trackpads.
-    if event.state & 0x1:
-        return
-
-    # Scroll the current active tab
-    current_tab = tabview.get()
-    scroll_amount = int(-1 * (event.delta / 120))
-    if scroll_amount == 0:
-        scroll_amount = int(-1 * event.delta)
-
-    if scroll_amount == 0:
-        return
-
-    if current_tab == "All Games":
-        game_list_frame._parent_canvas.yview_scroll(scroll_amount, "units")
-    elif current_tab == "Installed":
-        installed_games_frame._parent_canvas.yview_scroll(scroll_amount, "units")
-
-def _on_scroll_linux(delta):
-    # Scroll the current active tab on Linux
-    current_tab = tabview.get()
-    if current_tab == "All Games":
-        game_list_frame._parent_canvas.yview_scroll(delta, "units")
-    elif current_tab == "Installed":
-        installed_games_frame._parent_canvas.yview_scroll(delta, "units")
-
-# This shit is necessary to be able to scroll for some reason... Tk is kinda crappy
-app.bind("<MouseWheel>", _on_mousewheel)  # Windows & macOS
-app.bind("<Button-4>", lambda e: _on_scroll_linux(-1))  # Linux scroll up
-app.bind("<Button-5>", lambda e: _on_scroll_linux(1))   # Linux scroll down
-
-# Track selection index
-selected_game = None
-prev_selected = None
-prev_selected_installed = None
-
-if OS == "Linux":
-    seen_ids = set()
-    # Load Linux games
-    with open(f"{bandit_program_data}/list.txt", "r") as f:
-        for line in f:
-            line = line.strip()
-            game_id = line.split("|")[1]
-
-            rawlist.append(line)
-            seen_ids.add(game_id)
-            linux_game_ids.add(game_id)
-
-    # Load Windows games
-    with open(f"{bandit_program_data}/Windows/list.txt", "r") as f:
-        for line in f:
-            line = line.strip()
-            game_id = line.split("|")[1]
-
-            windows_game_ids.add(game_id)
-            # only add if not already present
-            if game_id not in seen_ids:
-                rawlist.append(line)
-                seen_ids.add(game_id)
-
-    # sort alphabetically by game name
-    rawlist.sort(key=lambda x: x.split("|")[0].lower())
-else: # Do it normally
-    for line in open(f"{bandit_program_data}/list.txt", "r").readlines():
-        rawlist.append(line.strip()) # strip removes newline (\n) character, which you always want, duh??
-        # here I turn the raw .txt file into an array.
-    rawlist.sort() # Sort alphabetically
-
-for line in rawlist:
-    gameNames.append(line.split("|")[0])
-    gameIDs.append(line.split("|")[1])
-    # From here on, null safety in case of missing data
-    try:
-        gameSizes.append(line.split("|")[2])
-    except IndexError:
-        gameSizes.append("Unknown")
-    try:
-        gameMPstatus.append(line.split("|")[3].strip()) # STRIP to remove newline char otherwise chaos
-    except IndexError:
-        gameMPstatus.append("Unknown")
-
-def fix_macos_permissions():
-    """Only repair macOS permissions when the Bandit data folder is actually not writable."""
-    if OS != "Darwin" or not os.path.exists(bandit_program_data):
-        return
-
-    try:
-        if os.access(bandit_program_data, os.W_OK):
-            return
-    except Exception:
-        pass
-
-    try:
-        subprocess.run([
-            "osascript",
-            "-e",
-            f'do shell script "chmod -R 777 \\"{bandit_program_data}\\"" with administrator privileges'
-        ], timeout=5, check=False)
-    except Exception as e:
-        print(f"[WARNING] Failed to fix macOS permissions: {e}")
-
-fix_macos_permissions()
-refresh_installed_games()
-refresh_installed_prereqs()
-
-def make_game_list():
-    # clear any existing items
-    for btn in game_item_buttons:
-        btn.destroy()
-    game_item_buttons.clear()
-
-    for index, game_name in enumerate(gameNames):
-        mpIcon = get_mp_icon(gameMPstatus[index])
-
-        if isinstance(mpIcon, ImageTk.PhotoImage):
-            btn = ctk.CTkButton(
-                game_list_frame,
-                text=game_name,
-                image=mpIcon,
-                compound="left",
-                anchor="w",
-                fg_color="transparent",
-                hover_color="#355486",
-                command=lambda i=index: select_game(i),
-                font=(listfont, fontSize)
-            )
+    def _done(self, appid: str, kind: str, ok: bool) -> None:
+        key = (appid, kind)
+        self.pending.discard(key)
+        if ok:
+            self.ready.emit(appid, kind)
         else:
-            btn = ctk.CTkButton(
-                game_list_frame,
-                text=game_name,
-                anchor="w",
-                fg_color="transparent",
-                hover_color="#355486",
-                command=lambda i=index: select_game(i),
-                font=(listfont, fontSize)
-            )
-        btn.pack(fill="x", pady=2, padx=4)
-        btn.bind("<Button-3>", lambda e, i=index: show_context_menu(e, i))
-        game_item_buttons.append(btn)
+            self.failed.add(key)
 
-        # set initial text color based on installed state
-        try:
-            game_id = gameIDs[index]
-            if game_id in installedGames:
-                btn.configure(text_color="white")
-            else:
-                btn.configure(text_color="gray50")
-        except Exception:
-            pass
+    def shutdown(self) -> None:
+        self.pool.clear()
+        self.pool.waitForDone(3000)
 
-    # do one pass to ensure selection visuals are correct
-    if selected_game is not None and 0 <= selected_game < len(game_item_buttons):
-        game_item_buttons[selected_game].configure(fg_color="#444444")
 
-def update_game_list_colors():
-    for index, game_id in enumerate(gameIDs):
-        try:
-            btn = game_item_buttons[index]
-        except IndexError:
-            continue
+def square_icon_pixmap(src: QPixmap, size: int = 96) -> QPixmap:
+    side = min(src.width(), src.height())
+    x, y = (src.width() - side) // 2, (src.height() - side) // 2
+    return src.copy(x, y, side, side).scaled(
+        size, size, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
 
-        if game_id in installedGames:
-            btn.configure(text_color="white")
+
+def letter_pixmap(name: str, size: int = 96) -> QPixmap:
+    """Neutral placeholder icon for games without artwork (mods etc.)."""
+    pal = QApplication.palette()
+    pm = QPixmap(size, size)
+    pm.fill(Qt.GlobalColor.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(pal.color(QPalette.ColorRole.Mid))
+    p.drawRoundedRect(QRectF(0, 0, size, size), size * 0.16, size * 0.16)
+    f = QFont()
+    f.setPixelSize(int(size * 0.55))
+    f.setBold(True)
+    p.setFont(f)
+    p.setPen(pal.color(QPalette.ColorRole.Window))
+    p.drawText(QRect(0, 0, size, size), Qt.AlignmentFlag.AlignCenter, (name.strip()[:1] or "?").upper())
+    p.end()
+    return pm
+
+
+def dimmed(pm: QPixmap, opacity: float = 0.4) -> QPixmap:
+    out = QPixmap(pm.size())
+    out.fill(Qt.GlobalColor.transparent)
+    p = QPainter(out)
+    p.setOpacity(opacity)
+    p.drawPixmap(0, 0, pm)
+    p.end()
+    return out
+
+
+class ArtBanner(QWidget):
+    """Hero image (cropped to fill) with the game's logo over a soft shade, like a Steam page."""
+
+    ASPECT = 215 / 460
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.hero: QPixmap | None = None
+        self.logo: QPixmap | None = None
+        self._scaled: tuple[QSize, QPixmap] | None = None
+        sp = QSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        sp.setHeightForWidth(True)
+        self.setSizePolicy(sp)
+
+    def hasHeightForWidth(self) -> bool:
+        return True
+
+    def heightForWidth(self, w: int) -> int:
+        return int(w * self.ASPECT)
+
+    def sizeHint(self) -> QSize:
+        return QSize(460, 215)
+
+    def set_art(self, hero: QPixmap | None, logo: QPixmap | None) -> None:
+        self.hero, self.logo, self._scaled = hero, logo, None
+        self.update()
+
+    def paintEvent(self, _event) -> None:
+        p = QPainter(self)
+        p.setRenderHints(QPainter.RenderHint.SmoothPixmapTransform | QPainter.RenderHint.Antialiasing)
+        r = self.rect()
+        pal = self.palette()
+        if self.hero is None:
+            p.fillRect(r, pal.color(QPalette.ColorRole.AlternateBase))
         else:
-            btn.configure(text_color="gray50")
-        # visually mark selected
-        if selected_game == index:
-            btn.configure(fg_color="#444444")
+            if self._scaled is None or self._scaled[0] != r.size():
+                sc = self.hero.scaled(r.size(), Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                                      Qt.TransformationMode.SmoothTransformation)
+                self._scaled = (r.size(), sc)
+            sc = self._scaled[1]
+            p.drawPixmap(r, sc, QRect((sc.width() - r.width()) // 2, (sc.height() - r.height()) // 2,
+                                      r.width(), r.height()))
+            if self.logo is not None:
+                g = QLinearGradient(0, r.height() * 0.45, 0, r.height())
+                g.setColorAt(0, QColor(0, 0, 0, 0))
+                g.setColorAt(1, QColor(0, 0, 0, 170))
+                p.fillRect(r, g)
+                lw, lh = int(r.width() * 0.5), int(r.height() * 0.42)
+                lg = self.logo.scaled(lw, lh, Qt.AspectRatioMode.KeepAspectRatio,
+                                      Qt.TransformationMode.SmoothTransformation)
+                m = int(r.height() * 0.07)
+                p.drawPixmap(m, r.height() - lg.height() - m, lg)
+        p.setPen(QPen(pal.color(QPalette.ColorRole.Mid)))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawRect(r.adjusted(0, 0, -1, -1))
+
+
+def heart_path(r: QRectF) -> QPainterPath:
+    x, y, w, h = r.x(), r.y(), r.width(), r.height()
+
+    def pt(px: float, py: float) -> QPointF:
+        return QPointF(x + px * w, y + py * h)
+
+    p = QPainterPath()
+    p.moveTo(pt(0.5, 1.0))
+    p.cubicTo(pt(0.5, 1.0), pt(0.0, 0.62), pt(0.0, 0.30))
+    p.cubicTo(pt(0.0, 0.10), pt(0.14, 0.0), pt(0.28, 0.0))
+    p.cubicTo(pt(0.40, 0.0), pt(0.50, 0.10), pt(0.50, 0.22))
+    p.cubicTo(pt(0.50, 0.10), pt(0.60, 0.0), pt(0.72, 0.0))
+    p.cubicTo(pt(0.86, 0.0), pt(1.0, 0.10), pt(1.0, 0.30))
+    p.cubicTo(pt(1.0, 0.62), pt(0.5, 1.0), pt(0.5, 1.0))
+    return p
+
+
+class HeartDelegate(QStyledItemDelegate):
+    """Filled heart = favorite; outline appears while the row is hovered (click to toggle)."""
+
+    FAV = QColor(226, 62, 98)
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.hover_row = -1
+
+    def paint(self, painter: QPainter, option, index) -> None:
+        opt = QStyleOptionViewItem(option)
+        self.initStyleOption(opt, index)
+        opt.text = ""
+        style = option.widget.style() if option.widget else QApplication.style()
+        style.drawControl(QStyle.ControlElement.CE_ItemViewItem, opt, painter, option.widget)
+
+        fav = bool(index.data(ROLE_FAV))
+        hovered = index.row() == self.hover_row
+        if not (fav or hovered):
+            return
+        side = min(option.rect.height() * 0.46, option.rect.width() * 0.6)
+        c = QRectF(option.rect).center()
+        rect = QRectF(c.x() - side / 2, c.y() - side * 0.47, side, side * 0.95)
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        path = heart_path(rect)
+        if fav:
+            painter.fillPath(path, self.FAV)
         else:
-            btn.configure(fg_color="transparent")
+            selected = bool(option.state & QStyle.StateFlag.State_Selected)
+            col = QColor(option.palette.color(
+                QPalette.ColorRole.HighlightedText if selected else QPalette.ColorRole.Text))
+            col.setAlpha(170)
+            painter.setPen(QPen(col, max(1.3, side / 11)))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawPath(path)
+        painter.restore()
 
-make_game_list()
 
-currently_downloading = False
-currently_downloading_game = None
-current_game_process = None
-current_game_process_game_id = None
-current_game_process_app_path = None
-current_game_process_app_name = None
-current_game_process_is_mac_app = False
-
-selected_game = None
-
-def format_size(size_in_bytes):
-    if size_in_bytes != "Unknown":
-        try:
-            if size_in_bytes >= 1_000_000_000:
-                formatted_size = f"{size_in_bytes / 1_000_000_000:.2f} GB"
-            elif size_in_bytes >= 1_000_000:
-                formatted_size = f"{size_in_bytes / 1_000_000:.2f} MB"
-            elif size_in_bytes >= 1_000:
-                formatted_size = f"{size_in_bytes / 1_000:.2f} KB"
-            else:
-                formatted_size = f"{size_in_bytes} bytes"
-            return formatted_size
-        except ValueError:
-            pass
-
-def select_game(index):
-    global selected_game, prev_selected, prev_selected_installed
-    selected_game = index
-
-    # only update previous and current selection visuals to avoid looping all items
-    try:
-        if prev_selected is not None and 0 <= prev_selected < len(game_item_buttons):
-            game_item_buttons[prev_selected].configure(fg_color="transparent")
-    except Exception:
-        pass
-
-    try:
-        if 0 <= selected_game < len(game_item_buttons):
-            game_item_buttons[selected_game].configure(fg_color="#444444")
-    except Exception:
-        pass
-
-    prev_selected = selected_game
-
-    # Handle installed games list selection
-    try:
-        if prev_selected_installed is not None and 0 <= prev_selected_installed < len(installed_game_item_buttons):
-            installed_game_item_buttons[prev_selected_installed].configure(fg_color="transparent")
-    except Exception:
-        pass
-
-    if gameIDs[selected_game] in installedGames:
-        try:
-            installed_index = installed_game_original_indices.index(selected_game)
-            installed_game_item_buttons[installed_index].configure(fg_color="#444444")
-            prev_selected_installed = installed_index
-        except ValueError:
-            prev_selected_installed = None
+def scaled_font(factor: float = 1.0, bold: bool = False) -> QFont:
+    base = QApplication.font()
+    f = QFont(base)
+    f.setBold(bold)
+    if base.pointSizeF() > 0:
+        f.setPointSizeF(base.pointSizeF() * factor)
     else:
-        prev_selected_installed = None
+        f.setPixelSize(max(1, round(base.pixelSize() * factor)))
+    return f
 
-    # update buttons depending on install/download/game state
+
+class GameFilterProxy(QSortFilterProxyModel):
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.mode = "all"
+        self.mp: str | None = None
+        self.needle = ""
+        self.setSortRole(ROLE_SORT)
+        self.setSortCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+
+    def filterAcceptsRow(self, row: int, parent: QModelIndex) -> bool:
+        idx = self.sourceModel().index(row, C_NAME, parent)
+        if self.mode == "installed" and not idx.data(ROLE_INSTALLED):
+            return False
+        if self.mode == "favorites" and not idx.data(ROLE_FAV):
+            return False
+        if self.mode == "recent" and not idx.data(ROLE_RECENT):
+            return False
+        if self.mp is not None and idx.data(ROLE_MP) != self.mp:
+            return False
+        return not self.needle or self.needle in str(idx.data(Qt.ItemDataRole.DisplayRole)).lower()
+
+
+UI_SCALE_MIN, UI_SCALE_MAX, UI_SCALE_DEFAULT = 75, 200, 125
+_base_font: QFont | None = None
+
+
+def clamp_scale(percent) -> int:
     try:
-        update_launch_button_state()
-    except Exception:
-        pass
-
-    print(f"{selected_game}: name: {gameNames[selected_game]} id: {gameIDs[selected_game]} size: {gameSizes[selected_game]} multiplayer: {gameMPstatus[selected_game]}")
-
-    formatted_mp_status = "Singleplayer or local multiplayer only."
-    if gameMPstatus[selected_game] == "1":
-        formatted_mp_status = "LAN multiplayer supported."
-    elif gameMPstatus[selected_game] == "2":
-        formatted_mp_status = "Online multiplayer with other Bandit users supported."
-    elif gameMPstatus[selected_game] == "3":
-        formatted_mp_status = "Online multiplayer with anyone supported."
-
-    gameInfoLabel.configure(text=f"{gameNames[selected_game]} — {format_size(int(gameSizes[selected_game]))}\n{formatted_mp_status}")
-
-def show_context_menu(event, index):
-    menu = tk.Menu(app, tearoff=0)
-    menu.add_command(label="Browse file location", command=lambda: browse_location(index))
-    menu.add_command(label="Move game", command=lambda: move_game(index))
-    menu.add_command(label="Create desktop shortcut", command=lambda: create_shortcut(index))
-    menu.post(event.x_root, event.y_root)
+        return max(UI_SCALE_MIN, min(UI_SCALE_MAX, int(percent)))
+    except (TypeError, ValueError):
+        return UI_SCALE_DEFAULT
 
 
-def reset_game_process_state():
-    global current_game_process, current_game_process_game_id, current_game_process_app_path, current_game_process_app_name, current_game_process_is_mac_app
-    current_game_process = None
-    current_game_process_game_id = None
-    current_game_process_app_path = None
-    current_game_process_app_name = None
-    current_game_process_is_mac_app = False
-    if selected_game is not None:
-        select_game(selected_game)
-
-
-def terminate_game_process(proc):
-    global current_game_process_app_path, current_game_process_app_name, current_game_process_is_mac_app
-    if proc is None:
-        return
-
-    if OS == "Darwin" and current_game_process_is_mac_app and current_game_process_app_name:
-        try:
-            subprocess.run(
-                ["osascript", "-e", f'tell application \"{current_game_process_app_name}\" to quit' ],
-                capture_output=True,
-                text=True,
-            )
-        except Exception:
-            pass
-
-    if OS == "Darwin" and current_game_process_is_mac_app and current_game_process_app_path:
-        try:
-            subprocess.run(
-                ["pkill", "-f", current_game_process_app_path],
-                capture_output=True,
-                text=True,
-            )
-        except Exception:
-            pass
-
-    if OS == "Windows" and proc.poll() is None:
-        try:
-            subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True, text=True)
-        except Exception:
-            pass
-
-    try:
-        proc.terminate()
-    except Exception:
-        pass
-
-    try:
-        proc.wait(timeout=5)
-    except subprocess.TimeoutExpired:
-        try:
-            proc.kill()
-            proc.wait(timeout=5)
-        except Exception:
-            pass
-
-
-def update_launch_button_state():
-    if selected_game is None or not 0 <= selected_game < len(gameIDs):
-        ipButton.configure(text="Install/Play", state="disabled")
-        uninstallButton.configure(state="disabled")
-        return
-
-    if currently_downloading and selected_game == currently_downloading_game:
-        ipButton.configure(text="Cancel Download", state="normal")
-        uninstallButton.configure(state="disabled")
-        return
-
-    selected_game_id = gameIDs[selected_game]
-    is_installed = selected_game_id in installedGames
-    is_running = current_game_process is not None and selected_game_id == current_game_process_game_id
-
-    if is_installed:
-        if is_running:
-            ipButton.configure(text="Quit game", state="normal")
-            uninstallButton.configure(state="disabled")
-        else:
-            ipButton.configure(text="Play", state="normal")
-            uninstallButton.configure(state="normal")
+def apply_ui_scale(percent) -> None:
+    """Scale the whole UI by resizing the application font (layouts follow the font)."""
+    global _base_font
+    app = QApplication.instance()
+    if _base_font is None:
+        _base_font = QFont(app.font())
+    percent = clamp_scale(percent)
+    f = QFont(_base_font)
+    if _base_font.pointSizeF() > 0:
+        f.setPointSizeF(_base_font.pointSizeF() * percent / 100)
     else:
-        ipButton.configure(text="Install", state="normal" if not currently_downloading else "disabled")
-        uninstallButton.configure(state="disabled")
+        f.setPixelSize(max(1, round(_base_font.pixelSize() * percent / 100)))
+    app.setFont(f)
 
 
-def quit_game():
-    global current_game_process, current_game_process_game_id, current_game_process_app_path, current_game_process_app_name, current_game_process_is_mac_app
-    if current_game_process is None:
-        return
+class SettingsDialog(QDialog):
+    def __init__(self, settings: Settings, parent=None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Settings")
+        self.checks: dict[str, QCheckBox] = {}
 
-    terminate_game_process(current_game_process)
+        form = QFormLayout()
+        self.name_edit = QLineEdit(settings.get("Account name", ""))
+        self.name_edit.setPlaceholderText(default_account_name())
+        form.addRow("Username in games:", self.name_edit)
 
-    game_id = current_game_process_game_id
-    game_name = None
-    if game_id in gameIDs:
-        game_name = gameNames[gameIDs.index(game_id)]
+        self.initial_scale = clamp_scale(settings.get("UI scale", UI_SCALE_DEFAULT))
+        self.scale_slider = QSlider(Qt.Orientation.Horizontal)
+        self.scale_slider.setRange(UI_SCALE_MIN, UI_SCALE_MAX)
+        self.scale_slider.setSingleStep(5)
+        self.scale_slider.setPageStep(25)
+        self.scale_slider.setTickInterval(25)
+        self.scale_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
+        self.scale_slider.setValue(self.initial_scale)
+        self.scale_label = QLabel(f"{self.initial_scale}%")
+        self.scale_label.setMinimumWidth(self.fontMetrics().horizontalAdvance("200%") + 8)
+        reset = QPushButton("Reset")
+        reset.clicked.connect(lambda: self.scale_slider.setValue(UI_SCALE_DEFAULT))
+        scale_row = QHBoxLayout()
+        scale_row.addWidget(self.scale_slider, 1)
+        scale_row.addWidget(self.scale_label)
+        scale_row.addWidget(reset)
+        form.addRow("Interface scale:", scale_row)
+        self.scale_slider.valueChanged.connect(self._preview_scale)
+        for key, value in settings.data.items():
+            if key.startswith("_") or not isinstance(value, bool):
+                continue
+            cb = QCheckBox(key)
+            cb.setChecked(value)
+            self.checks[key] = cb
+            form.addRow("", cb)
 
-    current_game_process = None
-    current_game_process_game_id = None
-    current_game_process_app_path = None
-    current_game_process_app_name = None
-    current_game_process_is_mac_app = False
-    infoLabel.configure(text="Game closed.")
-    send_telemetry("game_exited", game_id=game_id, game_name=game_name)
-    if selected_game is not None:
-        select_game(selected_game)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        lay = QVBoxLayout(self)
+        lay.addLayout(form)
+        lay.addWidget(buttons)
+
+    def _preview_scale(self, value: int) -> None:
+        """Live preview: the whole app resizes as the slider moves."""
+        self.scale_label.setText(f"{value}%")
+        apply_ui_scale(value)
+        if hasattr(self.parent(), "on_scale_changed"):
+            self.parent().on_scale_changed()
+        self.adjustSize()
+
+    def reject(self) -> None:
+        if self.scale_slider.value() != self.initial_scale:
+            self.scale_slider.setValue(self.initial_scale)  # revert the preview
+        super().reject()
+
+    def values(self) -> tuple[str, dict[str, bool]]:
+        return self.name_edit.text(), {k: cb.isChecked() for k, cb in self.checks.items()}
 
 
-def check_running_game_process():
-    global current_game_process, current_game_process_game_id, current_game_process_app_path, current_game_process_app_name, current_game_process_is_mac_app
-    if current_game_process is not None:
-        if current_game_process.poll() is not None:
-            game_id = current_game_process_game_id
-            game_name = None
-            if game_id in gameIDs:
-                game_name = gameNames[gameIDs.index(game_id)]
-            send_telemetry("game_exited", game_id=game_id, game_name=game_name)
-            current_game_process = None
-            current_game_process_game_id = None
-            current_game_process_app_path = None
-            current_game_process_app_name = None
-            current_game_process_is_mac_app = False
-            infoLabel.configure(text="Game exited.")
-            if selected_game is not None:
-                select_game(selected_game)
-            else:
-                update_launch_button_state()
-    app.after(1000, check_running_game_process)
+class MainWindow(QMainWindow):
+    def __init__(self) -> None:
+        super().__init__()
+        self.setWindowTitle(f"Bandit - Game Launcher v{VERSION}")
+        self.qs = QSettings("Bandit", "BanditGameLauncher")
 
+        self.settings = Settings()
+        self.store = InstalledStore()
+        self.prereqs = PrereqStore()
+        self.meta = UserMeta()
 
-def move_game(game_index):
-    global currently_downloading
+        self.games: dict[str, Game] = {}
+        self.manifests: dict[str, Manifest] = {}
+        self.selected_id: str | None = None
+        self._installed_cache: set[str] = set()
+        self.health: dict[str, bool] = {}
+        self.row_of: dict[str, int] = {}
+        self._icon_cache: dict[tuple[str, bool], QIcon] = {}
+        self._game_update_dates: dict[str, int | None] = {}
+        self._game_update_errors: dict[str, str] = {}
+        self._game_update_pending: set[str] = set()
+        self.art = ArtworkManager(self)
+        self.art.ready.connect(self.on_art_ready)
 
-    game_id = gameIDs[game_index]
-    if game_id not in installedGames:
-        tk.messagebox.showerror("Move Game", "This game is not installed.")
-        return
+        self.worker: QThread | None = None
+        self.active: tuple[str, str | None] | None = None  # (kind, game_id)
+        self.queue: list[Job] = []
+        self._tasks: set[TaskWorker] = set()
 
-    if currently_downloading:
-        tk.messagebox.showinfo(
-            "Busy",
-            "Please wait until the current download or move is complete before moving a game."
-        )
-        return
+        self.proc: subprocess.Popen | None = None
+        self.proc_game: Game | None = None
+        self.proc_mac_app: tuple[str, str] | None = None
+        self.proc_started = 0.0
 
-    section, install_path = get_installed_game_info(game_id)
-    if not section or not install_path:
-        tk.messagebox.showerror("Move Game", "Could not determine the current install location.")
-        return
+        self._build_actions()
+        self._build_menus()
+        self._build_ui()
+        self._wire()
+        self._restore_state()
+        QTimer.singleShot(0, self.startup)
 
-    game_folder = get_first_folder_in_executable_path(game_id, section)
-    source_path = os.path.normpath(os.path.join(install_path, game_folder))
-    if not os.path.exists(source_path):
-        tk.messagebox.showerror("Move Game", f"Game folder not found:\n{source_path}")
-        return
+    # ---- construction ------------------------------------------------- #
 
-    target_parent = ctk.filedialog.askdirectory(initialdir=install_path)
-    if not target_parent:
-        return
+    def _icon(self, theme: str, fallback: QStyle.StandardPixmap) -> QIcon:
+        return QIcon.fromTheme(theme, self.style().standardIcon(fallback))
 
-    target_parent = os.path.normpath(target_parent)
-    if os.path.abspath(target_parent) == os.path.abspath(install_path):
-        tk.messagebox.showinfo("Move Game", "The game is already located in that folder.")
-        return
+    def _mk(self, text: str, slot, key=None, icon: QIcon | None = None) -> QAction:
+        a = QAction(text, self)
+        if icon is not None:
+            a.setIcon(icon)
+        if key is not None:
+            a.setShortcut(QKeySequence(key))
+        a.triggered.connect(lambda _checked=False, s=slot: s())
+        return a
 
-    target_path = os.path.join(target_parent, os.path.basename(source_path))
-    if os.path.exists(target_path):
-        if not tk.messagebox.askyesno(
-            "Move Game",
-            f"A folder named '{os.path.basename(source_path)}' already exists in the destination. Replace it?"
-        ):
+    def _build_actions(self) -> None:
+        SP = QStyle.StandardPixmap
+        self.act_primary = self._mk("Play", self.on_primary, "Ctrl+Return",
+                                    self._icon("media-playback-start", SP.SP_MediaPlay))
+        self.act_fav = QAction("Favorite", self, checkable=True)
+        self.act_fav.setShortcut(QKeySequence("Ctrl+D"))
+        self.act_fav.triggered.connect(self.set_favorite)
+        self.act_args = self._mk("Launch Options…", self.edit_launch_options)
+        self.act_steam = self._mk("Open Steam Store Page", self.open_steam_page)
+        self.act_browse = self._mk("Browse File Location", self.browse_location, None,
+                                   self._icon("folder-open", SP.SP_DirOpenIcon))
+        self.act_move = self._mk("Move Game…", self.move_game)
+        self.act_shortcut = self._mk("Create Desktop Shortcut", self.make_shortcut)
+        self.act_repair = self._mk("Verify / Repair Installation", self.repair)
+        self.act_uninstall = self._mk("Uninstall…", self.uninstall, "Delete",
+                                      self._icon("edit-delete", SP.SP_TrashIcon))
+
+        self.act_refresh = self._mk("Refresh Library", self.refresh_library,
+                                    QKeySequence.StandardKey.Refresh,
+                                    self._icon("view-refresh", SP.SP_BrowserReload))
+        self.act_disk = self._mk("Disk Usage…", self.show_disk_usage)
+        self.act_random = self._mk("Pick a Random Game", self.pick_random, "Ctrl+Shift+R")
+        self.act_find = self._mk("Find", self._focus_search, QKeySequence.StandardKey.Find)
+        self.act_zoom_in = self._mk("Zoom In", lambda: self.zoom(+10))
+        self.act_zoom_in.setShortcuts([QKeySequence(QKeySequence.StandardKey.ZoomIn), QKeySequence("Ctrl+=")])
+        self.act_zoom_out = self._mk("Zoom Out", lambda: self.zoom(-10), QKeySequence.StandardKey.ZoomOut)
+        self.act_zoom_reset = self._mk("Actual Size", lambda: self.zoom(0), "Ctrl+0")
+
+        self.act_settings = self._mk("Settings…", self.open_settings)
+        seq = QKeySequence(QKeySequence.StandardKey.Preferences)
+        self.act_settings.setShortcut(seq if not seq.isEmpty() else QKeySequence("Ctrl+,"))
+        self.act_settings.setMenuRole(QAction.MenuRole.PreferencesRole)
+        self.act_quit = self._mk("Quit", self.close, QKeySequence.StandardKey.Quit)
+        self.act_quit.setMenuRole(QAction.MenuRole.QuitRole)
+
+        self.act_update = self._mk("Check for Updates…", lambda: self.check_updates(manual=True))
+        self.act_about = self._mk("About Bandit", self.show_about)
+        self.act_about.setMenuRole(QAction.MenuRole.AboutRole)
+
+    def _build_menus(self) -> None:
+        mb = self.menuBar()
+        m = mb.addMenu("&File")
+        m.addAction(self.act_settings)
+        m.addSeparator()
+        m.addAction(self.act_quit)
+
+        m = mb.addMenu("&Library")
+        m.addAction(self.act_find)
+        m.addAction(self.act_refresh)
+        m.addSeparator()
+        m.addAction(self.act_random)
+        m.addAction(self.act_disk)
+
+        m = mb.addMenu("&View")
+        m.addAction(self.act_zoom_in)
+        m.addAction(self.act_zoom_out)
+        m.addAction(self.act_zoom_reset)
+
+        m = mb.addMenu("&Game")
+        m.addAction(self.act_primary)
+        m.addAction(self.act_fav)
+        m.addAction(self.act_args)
+        m.addAction(self.act_steam)
+        m.addSeparator()
+        for a in (self.act_browse, self.act_move, self.act_shortcut, self.act_repair):
+            m.addAction(a)
+        m.addSeparator()
+        m.addAction(self.act_uninstall)
+
+        m = mb.addMenu("&Help")
+        m.addAction(self.act_update)
+        m.addAction(self.act_about)
+
+    def _build_ui(self) -> None:
+        central = QWidget()
+        self.setCentralWidget(central)
+        outer = QVBoxLayout(central)
+
+        # search / filter row
+        row = QHBoxLayout()
+        self.search = QLineEdit()
+        self.search.setPlaceholderText("Search")
+        self.search.setClearButtonEnabled(True)
+        self.show_combo = QComboBox()
+        for key, label in SHOW_FILTERS:
+            self.show_combo.addItem(label, key)
+        self.mp_combo = QComboBox()
+        self.mp_combo.addItem("All Player Modes", None)
+        for key, (label, _desc) in MP_LABELS.items():
+            self.mp_combo.addItem(label, key)
+        row.addWidget(self.search, 1)
+        row.addWidget(self.show_combo)
+        row.addWidget(self.mp_combo)
+        outer.addLayout(row)
+
+        # list + details
+        self.splitter = QSplitter(Qt.Orientation.Horizontal)
+        outer.addWidget(self.splitter, 1)
+
+        self.model = QStandardItemModel(0, len(HEADERS), self)
+        self.model.setHorizontalHeaderLabels(HEADERS)
+        self.model.setHeaderData(C_FAV, Qt.Orientation.Horizontal, "Favorites", Qt.ItemDataRole.ToolTipRole)
+        self.proxy = GameFilterProxy(self)
+        self.proxy.setSourceModel(self.model)
+
+        self.list = QTreeView()
+        self.list.setModel(self.proxy)
+        self.list.setRootIsDecorated(False)
+        self.list.setUniformRowHeights(True)
+        self.list.setAlternatingRowColors(True)
+        self.list.setSortingEnabled(True)
+        self.list.setMouseTracking(True)
+        self.heart = HeartDelegate(self.list)
+        self.list.setItemDelegateForColumn(C_FAV, self.heart)
+        self.list.viewport().installEventFilter(self)
+        self.list.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.list.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        header = self.list.header()
+        header.setStretchLastSection(False)
+        header.setSectionResizeMode(C_NAME, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(C_FAV, QHeaderView.ResizeMode.Fixed)
+        for c in (C_STATUS, C_SIZE, C_MP, C_LAST, C_TIME):
+            header.setSectionResizeMode(c, QHeaderView.ResizeMode.ResizeToContents)
+        self.list.sortByColumn(C_NAME, Qt.SortOrder.AscendingOrder)
+        self.splitter.addWidget(self.list)
+
+        self.stack = QStackedWidget()
+        empty = QLabel("Select a game from the list.")
+        empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        empty.setEnabled(False)
+        self.stack.addWidget(empty)
+
+        panel = QWidget()
+        pl = QVBoxLayout(panel)
+        self.banner = ArtBanner()
+        self.banner.hide()
+        pl.addWidget(self.banner)
+        self.d_title = QLabel()
+        self.d_title.setWordWrap(True)
+        f = self.d_title.font()
+        f.setBold(True)
+        f.setPointSizeF(f.pointSizeF() * 1.5)
+        self.d_title.setFont(f)
+        pl.addWidget(self.d_title)
+
+        form = QFormLayout()
+        form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        self.f_status, self.f_size, self.f_mp, self.f_platform = QLabel(), QLabel(), QLabel(), QLabel()
+        self.f_location, self.f_played, self.f_last, self.f_updated, self.f_args = (
+            QLabel(), QLabel(), QLabel(), QLabel(), QLabel())
+        for lbl in (self.f_status, self.f_size, self.f_mp, self.f_platform,
+                    self.f_location, self.f_played, self.f_last, self.f_updated, self.f_args):
+            lbl.setWordWrap(True)
+            lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.form = form
+        for text, w in (("Status:", self.f_status), ("Size:", self.f_size), ("Multiplayer:", self.f_mp),
+                        ("Version:", self.f_platform), ("Location:", self.f_location),
+                        ("Play time:", self.f_played), ("Last played:", self.f_last),
+                        ("Last updated on Bandit:", self.f_updated),
+                        ("Launch options:", self.f_args)):
+            form.addRow(text, w)
+        pl.addLayout(form)
+        pl.addStretch(1)
+
+        buttons = QHBoxLayout()
+        self.btn_uninstall = QPushButton("Uninstall…")
+        self.btn_uninstall.clicked.connect(self.uninstall)
+        self.btn_primary = QPushButton("Play")
+        self.btn_primary.setDefault(True)
+        self.btn_primary.setMinimumWidth(130)
+        self.btn_primary.clicked.connect(self.on_primary)
+        buttons.addStretch(1)
+        buttons.addWidget(self.btn_uninstall)
+        buttons.addWidget(self.btn_primary)
+        pl.addLayout(buttons)
+        self.stack.addWidget(panel)
+        self.splitter.addWidget(self.stack)
+        self.splitter.setStretchFactor(0, 3)
+        self.splitter.setStretchFactor(1, 2)
+        self.splitter.setChildrenCollapsible(False)
+
+        # centered download panel (hidden until something is downloading)
+        self.dl_panel = QWidget()
+        pv = QVBoxLayout(self.dl_panel)
+        pv.setContentsMargins(0, 0, 0, 0)
+        line = QFrame()
+        line.setFrameShape(QFrame.Shape.HLine)
+        line.setFrameShadow(QFrame.Shadow.Sunken)
+        pv.addWidget(line)
+        ph = QHBoxLayout()
+        ph.addStretch(1)
+        self.dl_col = QWidget()
+        grid = QGridLayout(self.dl_col)
+        grid.setContentsMargins(0, 6, 0, 6)
+        grid.setHorizontalSpacing(10)
+        grid.setVerticalSpacing(3)
+        self.dl_pad = QWidget()               # mirrors the Cancel button so the bar stays centered
+        self.dl_title = QLabel()
+        self.dl_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.dl_bar = QProgressBar()
+        self.dl_bar.setRange(0, 1000)
+        self.dl_bar.setTextVisible(False)
+        self.cancel_btn = QPushButton("Cancel")
+        self.dl_pct = QLabel()
+        self.dl_pct.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.dl_detail = QLabel()
+        self.dl_detail.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        grid.addWidget(self.dl_pad, 1, 0)
+        grid.addWidget(self.dl_title, 0, 1)
+        grid.addWidget(self.dl_bar, 1, 1)
+        grid.addWidget(self.cancel_btn, 1, 2)
+        grid.addWidget(self.dl_pct, 2, 1)
+        grid.addWidget(self.dl_detail, 3, 1)
+        grid.setColumnStretch(1, 1)
+        ph.addWidget(self.dl_col, 4)
+        ph.addStretch(1)
+        pv.addLayout(ph)
+        self.dl_panel.hide()
+        outer.addWidget(self.dl_panel)
+
+        # status bar
+        sb = self.statusBar()
+        self.count_label = QLabel()
+        self.count_label.setMinimumWidth(190)
+        self.count_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self.progress = QProgressBar()
+        self.progress.setFixedWidth(200)
+        self.progress.setRange(0, 1000)
+        self.progress.hide()
+        sb.addPermanentWidget(self.progress)
+        sb.addPermanentWidget(self.count_label)
+
+    def _wire(self) -> None:
+        self.search.textChanged.connect(self._on_search)
+        self.show_combo.currentIndexChanged.connect(self._on_filters)
+        self.mp_combo.currentIndexChanged.connect(self._on_filters)
+        self.list.selectionModel().currentRowChanged.connect(self._on_current_changed)
+        self.list.customContextMenuRequested.connect(self._on_context_menu)
+        self.list.activated.connect(self._on_activated)
+        self.list.clicked.connect(self._on_clicked)
+        self.list.entered.connect(self._on_entered)
+        self.cancel_btn.clicked.connect(self.cancel_active)
+
+        self.proc_timer = QTimer(self, interval=1000)
+        self.proc_timer.timeout.connect(self._poll_process)
+        self.proc_timer.start()
+
+    def _restore_state(self) -> None:
+        k = clamp_scale(self.settings.get("UI scale", UI_SCALE_DEFAULT)) / 100
+        avail = self.screen().availableGeometry()
+        self.resize(min(int(980 * k), avail.width() - 40), min(int(620 * k), avail.height() - 80))
+        geo = self.qs.value("geometry")
+        if geo:
+            self.restoreGeometry(geo)
+        split = self.qs.value("splitter")
+        if split:
+            self.splitter.restoreState(split)
+        else:  # first run: favour the list, the details panel needs less room
+            self.splitter.setSizes([int(self.width() * 0.68), int(self.width() * 0.32)])
+        hdr = self.qs.value("header")
+        if hdr:
+            self.list.header().restoreState(hdr)
+        show = self.qs.value("show_filter", "all")
+        i = self.show_combo.findData(show)
+        if i >= 0:
+            self.show_combo.setCurrentIndex(i)
+        self.on_scale_changed()
+
+    # ---- helpers ------------------------------------------------------ #
+
+    def run_task(self, fn, callback) -> TaskWorker:
+        w = TaskWorker(fn, self)
+        self._tasks.add(w)
+
+        def finished(result, err) -> None:
+            self._tasks.discard(w)
+            callback(result, err)
+            w.deleteLater()
+
+        w.done.connect(finished)
+        w.start()
+        return w
+
+    def set_status(self, text: str) -> None:
+        self.statusBar().showMessage(text.replace("\n", "  —  "))
+
+    def _show_progress(self, visible: bool, busy: bool = False) -> None:
+        self.progress.setVisible(visible)
+        self.progress.setRange(0, 0 if busy else 1000)
+        if not busy:
+            self.progress.setValue(0)
+
+    def selected_game(self) -> Game | None:
+        return self.games.get(self.selected_id) if self.selected_id else None
+
+    def is_installed(self, game: Game) -> bool:
+        return game.id in self._installed_cache
+
+    def _focus_search(self) -> None:
+        self.search.setFocus()
+        self.search.selectAll()
+
+    def _alert(self) -> None:
+        if not self.isActiveWindow():
+            QApplication.alert(self)
+
+    # ---- startup ------------------------------------------------------ #
+
+    def startup(self) -> None:
+        self.ensure_account_name()
+        self.show_telemetry_notice()
+        self.reload_library()
+        self.refresh_library()
+        if self.settings.get("Check for updates on startup", True):
+            self.check_updates(manual=False)
+
+    def refresh_library(self) -> None:
+        self.set_status("Syncing library…")
+        self._show_progress(True, busy=True)
+        self.act_refresh.setEnabled(False)
+        self.run_task(sync_library, self._on_synced)
+
+    def _on_synced(self, _result, err) -> None:
+        self.act_refresh.setEnabled(True)
+        if self.active is None:
+            self._show_progress(False)
+        if err:
+            if not self.games:
+                QMessageBox.critical(
+                    self, "Can't reach the server",
+                    f"Bandit couldn't download the game list and has no cached copy.\n\n{err}")
+            self.set_status("Offline — showing the cached library.")
             return
-        try:
-            shutil.rmtree(target_path)
-        except Exception as e:
-            tk.messagebox.showerror("Move Game", f"Failed to remove existing destination folder:\n{e}")
+        self.set_status("Library is up to date.")
+        self.reload_library()
+
+    @staticmethod
+    def _fetch_latest_tag() -> str:
+        r = requests.get(GITHUB_LATEST, timeout=10)
+        r.raise_for_status()
+        return r.json()["tag_name"]
+
+    def check_updates(self, manual: bool) -> None:
+        def done(tag, err) -> None:
+            if err or not tag:
+                if manual:
+                    QMessageBox.warning(self, "Check for Updates", "Couldn't reach GitHub to check for updates.")
+                return
+            if version_tuple(tag) > version_tuple(VERSION):
+                if QMessageBox.question(
+                    self, "Update available",
+                    f"Version {tag} is available (you have {VERSION}).\n\nOpen the download page?",
+                ) == QMessageBox.StandardButton.Yes:
+                    webbrowser.open(RELEASES_PAGE, new=2)
+            elif manual:
+                QMessageBox.information(self, "Check for Updates", f"Bandit {VERSION} is up to date.")
+
+        self.run_task(self._fetch_latest_tag, done)
+
+    def show_about(self) -> None:
+        QMessageBox.about(
+            self, "About Bandit",
+            f"<b>Bandit Game Launcher</b><br>Version {VERSION}<br><br>"
+            "Built with PyQt6 and your system's native look.")
+
+    def ensure_account_name(self) -> None:
+        name = (self.settings.get("Account name") or "").strip()
+        if not name:
+            text, ok = QInputDialog.getText(
+                self, "Create Username",
+                "Enter a username to use in games.\nYou can change it later in Settings.")
+            name = text.strip() if ok else ""
+        self.set_account_name(name)
+
+    def set_account_name(self, name: str) -> None:
+        name = name.strip() or default_account_name()
+        self.settings.set("Account name", name)
+        write_account_name_files(name)
+
+    def show_telemetry_notice(self) -> None:
+        if not self.settings.get("_first_launch", False):
             return
+        QMessageBox.information(
+            self, "Telemetry Notice",
+            "Bandit collects anonymized telemetry data including:\n"
+            "• Your PC username\n• Your IP address\n• Which games you download\n\n"
+            "This helps me understand usage patterns.\n\n"
+            "You can turn this off anytime in Settings.")
+        self.settings.set("_first_launch", False)
 
-    currently_downloading = True
-    progressBar.set(0)
-    infoLabel.configure(text=f"Moving {gameNames[game_index]}...")
+    # ---- library / model --------------------------------------------- #
 
-    def task():
-        try:
-            shutil.move(source_path, target_parent)
-            with open(f"{bandit_program_data}/installed_games.json", "r") as f:
-                installed_games = json.load(f)
-            if section not in installed_games:
-                installed_games[section] = {}
-            installed_games[section][game_id] = target_parent
-            with open(f"{bandit_program_data}/installed_games.json", "w") as f:
-                json.dump(installed_games, f, indent=4)
-
-            def done_ui():
-                progressBar.set(1)
-                infoLabel.configure(text=f"Moved {gameNames[game_index]} successfully.")
-                refresh_installed_games()
-                update_game_list_colors()
-                if selected_game is not None:
-                    select_game(selected_game)
-
-            app.after(0, done_ui)
-        except Exception as e:
-            def fail_ui():
-                infoLabel.configure(text=f"Failed to move game: {e}")
-                refresh_installed_games()
-                update_game_list_colors()
-                if selected_game is not None:
-                    select_game(selected_game)
-            app.after(0, fail_ui)
-        finally:
-            global currently_downloading
-            currently_downloading = False
-
-    threading.Thread(target=task, daemon=True).start()
-
-
-def browse_location(game_index):
-    if gameIDs[game_index] in installedGames:
-        section, install_path = get_installed_game_info(gameIDs[game_index])
-        if not section or not install_path:
-            return
-        game_path = f"{install_path}/{get_first_folder_in_executable_path(gameIDs[game_index], section)}"
-        print(game_path)
-
-        if os.path.exists(game_path):
-            if OS == "Windows":
-                os.startfile(game_path)
-            elif OS == "Darwin":
-                subprocess.run(["open", "-R", game_path])
-            elif OS == "Linux":
-                subprocess.run(["xdg-open", game_path])
-
-def sanitize_filename(name):
-    return "".join(c for c in name if c.isalnum() or c in (' ', '-', '_')).rstrip()
-
-# NOTE: resolve_icon_path is defined earlier with support for Windows section files.
-
-def get_desktop_path():
-    if OS == "Windows":
-        try:
-            from ctypes import wintypes, windll, create_unicode_buffer
-            CSIDL_DESKTOPDIRECTORY = 0x10
-            buf = create_unicode_buffer(wintypes.MAX_PATH)
-            windll.shell32.SHGetFolderPathW(None, CSIDL_DESKTOPDIRECTORY, None, 0, buf)
-            desktop = buf.value
-            if os.path.isdir(desktop):
-                return desktop
-        except Exception:
-            pass
-    return os.path.join(os.path.expanduser("~"), "Desktop")
-
-def remove_desktop_shortcut(display_name):
-    desktop = get_desktop_path()
-    safe_name = sanitize_filename(display_name)
-    candidates = []
-    if OS == "Windows":
-        candidates = [f"{safe_name}.lnk", f"{safe_name}.url", f"{display_name}.lnk", f"{display_name}.url"]
-    elif OS == "Darwin":
-        candidates = [safe_name, display_name]
-    else:
-        candidates = [f"{safe_name}.desktop", f"{display_name}.desktop"]
-
-    for candidate in candidates:
-        path = os.path.join(desktop, candidate)
-        try:
-            if os.path.exists(path):
-                os.remove(path)
-        except Exception:
-            pass
-
-def create_shortcut(game_index):
-    if gameIDs[game_index] in installedGames:
-        game_id = gameIDs[game_index]
-        display_name = gameNames[game_index]
-        safe_name = sanitize_filename(display_name)
-
-        section, game_install_path = get_installed_game_info(game_id)
-        if not section or not game_install_path:
-            tk.messagebox.showerror("Error", "Could not find installation information for this game.")
-            return
-
-        # Resolve executable relative path and full path
-        with open(get_executable_json_path(section), "r") as f:
-            executable_paths = json.load(f)
-        executable_relative_path = executable_paths.get(game_id, "")
-        game_exec_full_path = os.path.join(game_install_path, executable_relative_path) if executable_relative_path else game_install_path
-        game_exec_full_path = os.path.normpath(game_exec_full_path)
-
-        icon_path = resolve_icon_path(game_id, game_install_path, section)
-
-        if not os.path.exists(game_exec_full_path):
-            tk.messagebox.showwarning("Executable Missing", f"Executable not found:\n{game_exec_full_path}")
-            return
-
-        desktop = get_desktop_path()
-        os.makedirs(desktop, exist_ok=True)
-
-        try:
-            if OS == "Windows":
-                # Prefer win32com if available to create a real .lnk
-                try:
-                    from win32com.client import Dispatch
-                    shortcut_path = os.path.join(desktop, f"{safe_name}.lnk")
-                    shell = Dispatch('WScript.Shell')
-                    shortcut = shell.CreateShortCut(shortcut_path)
-                    shortcut.Targetpath = game_exec_full_path
-                    shortcut.WorkingDirectory = os.path.dirname(game_exec_full_path)
-                    shortcut.IconLocation = icon_path if icon_path else game_exec_full_path
-                    shortcut.save()
-                except Exception:
-                    # Fallback to .url which also works as a clickable link
-                    url_path = os.path.join(desktop, f"{safe_name}.url")
-                    with open(url_path, "w", encoding="utf-8") as f:
-                        f.write("[InternetShortcut]\n")
-                        f.write("URL=file:///" + game_exec_full_path.replace("\\", "/") + "\n")
-                        icon_src = icon_path if icon_path else game_exec_full_path
-                        f.write("IconFile=" + icon_src + "\n")
-                        f.write("IconIndex=0\n")
-
-            elif OS == "Darwin":
-                # Make a Finder alias using AppleScript
-                as_cmd = (
-                    f'tell application "Finder" to make alias file to '
-                    f'(POSIX file "{game_exec_full_path}") '
-                    f'at (POSIX file "{desktop}") '
-                    f'with properties {{name:"{safe_name}"}}'
-                )
-                subprocess.run(["osascript", "-e", as_cmd], check=False)
-
-                if icon_path:
-                    copy_icon_cmd = f'''
-                    set src to POSIX file "{icon_path}"
-                    set dst to POSIX file "{os.path.join(desktop, safe_name)}"
-                    tell application "Finder"
-                        set icon of dst to icon of src
-                    end tell
-                    '''
-                    subprocess.run(["osascript", "-e", copy_icon_cmd], check=False)
-
-            else:  # Linux
-                desktop_file = os.path.join(desktop, f"{safe_name}.desktop")
-                exec_cmd = f'"{game_exec_full_path}"'
-
-                desktop_entry = [
-                    "[Desktop Entry]",
-                    f"Name={display_name}",
-                    f"Exec={exec_cmd}",
-                    "Type=Application",
-                    f"Path={os.path.dirname(game_exec_full_path)}",
-                    f"Icon={icon_path if icon_path else os.path.splitext(game_exec_full_path)[0]}",
-                    "Terminal=false"
-                ]
-                with open(desktop_file, "w", encoding="utf-8") as f:
-                    f.write("\n".join(desktop_entry))
-                try:
-                    os.chmod(desktop_file, 0o755)
-                except Exception:
-                    pass
-
-            tk.messagebox.showinfo("Shortcut Created", f"Desktop shortcut created for {display_name}.")
-        except Exception as e:
-            tk.messagebox.showerror("Error", f"Failed to create shortcut: {e}")
-
-def download_tar(game_id, destination = bandit_games_folder, source_os=None):
-    source_os = source_os or OS
-    url = f"https://thuis.felixband.nl/bandit/{source_os}/{game_id}.tar.gz"
-    display_name = None
-    if currently_downloading_game is not None and 0 <= currently_downloading_game < len(gameNames):
-        display_name = gameNames[currently_downloading_game]
-    else:
-        display_name = game_id
-    return download_tar_url(url, destination, display_name)
-
-
-def install_or_play():
-    # if currently downloading & selected curr downloading game, cancel
-    global currently_downloading, currently_downloading_game, current_game_process, current_game_process_game_id, current_game_process_app_path, current_game_process_app_name, current_game_process_is_mac_app
-
-    if selected_game is None or not 0 <= selected_game < len(gameIDs):
-        return
-
-    if currently_downloading and selected_game == currently_downloading_game:
-        currently_downloading = False
-        print("Cancelling download...")
-        if selected_game is not None:
-            select_game(selected_game)
-        return
-    if currently_downloading and selected_game != currently_downloading_game:
-        if gameIDs[selected_game] not in installedGames:
-            tk.messagebox.showinfo(
-                "Busy",
-                "Please wait until the current download or move is complete before installing or cancelling this game."
-            )
-            return
-
-    if current_game_process is not None:
-        if gameIDs[selected_game] == current_game_process_game_id:
-            quit_game()
-        else:
-            tk.messagebox.showinfo(
-                "Game already running",
-                "A game is already running. Quit it before launching another game."
-            )
-        return
-    
-    # if selected game is installed, play!
-    if gameIDs[selected_game] in installedGames:
-        print(f'Launching {selected_game}!')
-        section, install_path = get_installed_game_info(gameIDs[selected_game])
-        if not section or not install_path:
-            tk.messagebox.showerror("Error", "Unable to locate the installed game path.")
-            return
-
-        with open(get_executable_json_path(section), "r") as f:
-            executable_paths = json.load(f)
-            game_path = f"{install_path}/{executable_paths[gameIDs[selected_game]]}"
-
-            # Install prerequisites
-            with open(get_prereq_json_path(section), "r") as f:
-                prereq_paths = json.load(f)
-                if gameIDs[selected_game] in prereq_paths and gameIDs[selected_game] not in installedPrereqs:
-                    install_commands = []
-                    for prereq in prereq_paths[gameIDs[selected_game]]:
-                        # Normalize the path
-                        full_path = os.path.normpath(f"{install_path}/{get_first_folder_in_executable_path(gameIDs[selected_game], section)}/{prereq['path']}")
-                        
-                        # Run the prerequisite directly in PowerShell
-                        if prereq["command"]:
-                            cmd = f'& "{full_path}" {prereq["command"]}'
-                        else:
-                            cmd = f'& "{full_path}"'
-                        install_commands.append(cmd)
-                    
-                    # Join commands with semicolons to make a single script
-                    inner_script = "; ".join(install_commands)
-
-                    if OS == "Windows" and install_commands:
-                        try:
-                            print("Requesting single UAC elevation...")
-                            
-                            # 1. PowerShell requires UTF-16LE encoding for its -EncodedCommand parameter
-                            encoded_bytes = inner_script.encode('utf-16le')
-                            encoded_script = base64.b64encode(encoded_bytes).decode('utf-8')
-                            
-                            # 2. PowerShell requires UTF-16LE encoding for its -EncodedCommand parameter
-                            # 2. Pass the Base64 string to the elevated PowerShell. 
-                            # No quote conflicts exist because the payload is just a block of letters and numbers!
-                            ps_shell_command = f"Start-Process powershell -ArgumentList '-NoProfile -EncodedCommand {encoded_script}' -Verb RunAs -Wait"
-                            
-                            # 3. Execute and capture output
-                            result = subprocess.run(["powershell", "-Command", ps_shell_command], capture_output=True, text=True, check=True)
-                            
-                            # Mark prereqs as installed
-                            with open(f"{bandit_userdata}/installed_prereqs.json", "r") as f:
-                                prereqs = json.load(f)
-                            prereqs[gameIDs[selected_game]] = True
-                            with open(f"{bandit_userdata}/installed_prereqs.json", "w") as f:
-                                json.dump(prereqs, f, indent=4)
-                            refresh_installed_prereqs()
-                            
-                            tk.messagebox.showinfo("Success", "All prerequisites installed.")
-                            
-                        except subprocess.CalledProcessError as e:
-                            error_msg = f"Prerequisite installation failed.\nExit code: {e.returncode}\nStdout: {e.stdout}\nStderr: {e.stderr}"
-                            print(error_msg)
-                            tk.messagebox.showerror("Prerequisite Installation Failed", error_msg)
-                            return False
-                        except Exception as e:
-                            error_msg = f"An error occurred: {e}"
-                            print(error_msg)
-                            tk.messagebox.showerror("Error", error_msg)
-                            return False
-                        
-
-            try:
-                # RUN GAME
-                proc = None
-                if OS == "Darwin":
-                    try:
-                        # If it's a macOS application bundle (ends with .app) open it with Finder and wait until it closes
-                        if str(game_path).endswith('.app') or (os.path.isdir(game_path) and str(game_path).endswith('.app')):
-                            proc = subprocess.Popen(["open", "-W", game_path], cwd=os.path.dirname(game_path))
-                            current_game_process_app_path = game_path
-                            current_game_process_app_name = os.path.splitext(os.path.basename(game_path))[0]
-                            current_game_process_is_mac_app = True
-                        else:
-                            # Otherwise attempt to execute the file directly (native binary)
-                            if os.path.exists(game_path):
-                                proc = subprocess.Popen([game_path], cwd=os.path.dirname(game_path))
-                                current_game_process_app_path = game_path
-                                current_game_process_app_name = None
-                                current_game_process_is_mac_app = False
-                    except Exception as e:
-                        tk.messagebox.showerror("Error", f"Failed to launch the game on macOS. Error: {e}")
-                elif OS == "Linux" and section == "Windows":
-                    if not ensure_proton_installed():
-                        return
-                    proc = run_with_proton(game_path, os.path.dirname(game_path))
-                    if proc is None:
-                        tk.messagebox.showerror("Error", "Failed to run the Windows game with Proton.")
-                        return
-                else:
-                    proc = subprocess.Popen(
-                        [game_path],
-                        cwd=os.path.dirname(game_path),
-                        creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if OS == "Windows" else 0
-                    )
-
-                if proc is not None:
-                    current_game_process = proc
-                    current_game_process_game_id = gameIDs[selected_game]
-                    update_launch_button_state()
-                send_telemetry("game_launched", game_id=gameIDs[selected_game], game_name=gameNames[selected_game])
-            except Exception as e:
-                tk.messagebox.showerror("Error", f"Failed to launch the game. Error: {e}")
-    else:
-        # install the game
-        currently_downloading = True
-        currently_downloading_game = selected_game
-        print(f"Installing {selected_game}")
-        ipButton.configure(state="disabled")
-
-        install_source_os = OS
+    def reload_library(self) -> None:
+        self.manifests = {OS: Manifest(OS)}
         if OS == "Linux":
-            game_id = gameIDs[selected_game]
-            if game_id in windows_game_ids and game_id not in linux_game_ids:
-                install_source_os = "Windows"
-            elif game_id in linux_game_ids and game_id in windows_game_ids:
-                print("There is a Linux AND Windows version of this game.")
-                if not tk.messagebox.askyesno(
-                    "Which version?",
-                    "This game has a Linux AND a Windows version. Which one would you prefer to install?\n\nYes = Native Linux version (recommended)\nNo = Windows version (requires Proton)"
-                ):
-                    install_source_os = "Windows"
+            self.manifests["Windows"] = Manifest("Windows")
+        self.games = load_catalog()
+        self._installed_cache = self.store.installed_ids()
+        self.compute_health()
 
-        def task():
-            global currently_downloading, currently_downloading_game
+        self.model.removeRows(0, self.model.rowCount())
+        self._icon_cache.clear()
+        self.row_of = {}
+        for g in sorted(self.games.values(), key=lambda g: g.name.lower()):
+            items = []
+            for c in range(len(HEADERS)):
+                it = QStandardItem()
+                it.setEditable(False)
+                if c in (C_SIZE, C_TIME):
+                    it.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                if c == C_FAV:
+                    it.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                items.append(it)
+            items[C_NAME].setData(g.id, ROLE_ID)
+            self.row_of[g.id] = self.model.rowCount()
+            self.model.appendRow(items)
+        self.update_rows()
+        self._reselect()
 
-            if ask_install_path:
-                game_destination = ctk.filedialog.askdirectory(initialdir=bandit_games_folder)
-                if not game_destination:
-                    currently_downloading = False
-                    currently_downloading_game = None
-                    app.after(0, lambda: select_game(selected_game))
-                    return
-            else:
-                game_destination = bandit_games_folder
+    def compute_health(self) -> None:
+        self.health = {}
+        for gid in self._installed_cache:
+            section, path = self.store.find(gid)
+            m = self.manifests.get(section or "")
+            exe = m.executables.get(gid) if m else None
+            self.health[gid] = True if not (path and exe) else \
+                os.path.exists(os.path.normpath(os.path.join(path, exe)))
 
-            print(f'space left: {shutil.disk_usage(game_destination).free} vs game size: {int(gameSizes[selected_game])}')
-            if shutil.disk_usage(game_destination).free < int(gameSizes[selected_game]):
-                print('no space!')
-                if not tk.messagebox.askyesno("Not enough space!", f"This game is {format_size(int(gameSizes[selected_game]))} bytes big, and you only have {format_size(shutil.disk_usage(game_destination).free)} GB of space left!\nIn case this is wrong, would you like to continue downloading this game anyway?"):
-                    currently_downloading = False
-                    currently_downloading_game = None
-                    app.after(0, lambda: select_game(selected_game))
-                    return
+    def state_for(self, game: Game) -> str:
+        a = self.active
+        if a and a[1] == game.id:
+            return "downloading" if a[0] == "install" else "working"
+        if self.proc is not None and self.proc_game and self.proc_game.id == game.id:
+            return "running"
+        if any(j.game.id == game.id for j in self.queue):
+            return "queued"
+        return "installed" if self.is_installed(game) else "available"
 
-            send_telemetry("download_started", game_id=gameIDs[selected_game], game_name=gameNames[selected_game])
-            success = download_tar(gameIDs[selected_game], game_destination, source_os=install_source_os)
+    def status_text(self, game: Game) -> str:
+        st = self.state_for(game)
+        if st == "running":
+            return "Running"
+        if st == "downloading":
+            return "Installing…"
+        if st == "working":
+            return "Working…"
+        if st == "queued":
+            pos = next(i for i, j in enumerate(self.queue) if j.game.id == game.id) + 1
+            return f"Queued ({pos})"
+        if st == "installed":
+            return "Installed" if self.health.get(game.id, True) else "Needs repair"
+        return ""
 
-            def after():
-                ipButton.configure(state="normal")
+    def icon_for(self, game: Game, installed: bool) -> QIcon:
+        key = (game.id, installed)
+        icon = self._icon_cache.get(key)
+        if icon is None:
+            pm = None
+            if game.steam_appid:
+                src = self.art.get(game.steam_appid, "header")
+                if src is not None:
+                    pm = square_icon_pixmap(src)
+            if pm is None:
+                pm = letter_pixmap(game.name)
+            if not installed:
+                pm = dimmed(pm)
+            icon = self._icon_cache[key] = QIcon(pm)
+        return icon
 
-                if success:
-                    # update installed_games.json
-                    with open(f"{bandit_program_data}/installed_games.json", "r") as f:
-                        installed_games = json.load(f)
+    def on_art_ready(self, appid: str, kind: str) -> None:
+        if kind == "header":
+            for g in self.games.values():
+                if g.steam_appid == appid and g.id in self.row_of:
+                    self._icon_cache.pop((g.id, True), None)
+                    self._icon_cache.pop((g.id, False), None)
+                    self.model.item(self.row_of[g.id], C_NAME).setIcon(self.icon_for(g, self.is_installed(g)))
+        sel = self.selected_game()
+        if sel and sel.steam_appid == appid:
+            self.refresh_selection()
 
-                    if install_source_os not in installed_games:
-                        installed_games[install_source_os] = {}
-                    installed_games[install_source_os][gameIDs[currently_downloading_game]] = game_destination
+    def open_steam_page(self) -> None:
+        g = self.selected_game()
+        if g and g.steam_appid:
+            webbrowser.open(f"https://store.steampowered.com/app/{g.steam_appid}")
 
-                    with open(f"{bandit_program_data}/installed_games.json", "w") as f:
-                        json.dump(installed_games, f, indent=4)
+    def eventFilter(self, obj, event) -> bool:
+        if obj is self.list.viewport() and event.type() == QEvent.Type.Leave:
+            self.heart.hover_row = -1
+            self.list.viewport().update()
+        return super().eventFilter(obj, event)
 
-                    # refresh UI
-                    refresh_installed_games()
-                    update_game_list_colors()
-                    if selected_game is not None:
-                        select_game(selected_game)
-                    send_telemetry("game_installed", game_id=gameIDs[currently_downloading_game], game_name=gameNames[currently_downloading_game])
-                    currently_downloading = False
+    def _on_entered(self, idx: QModelIndex) -> None:
+        self.heart.hover_row = idx.row()
+        self.list.viewport().update()
+
+    def _on_clicked(self, idx: QModelIndex) -> None:
+        if idx.column() == C_FAV:
+            gid = idx.sibling(idx.row(), C_NAME).data(ROLE_ID)
+            self._set_fav(gid, gid not in self.meta.favorites)
+
+    def dim_brush(self) -> QBrush:
+        """Text colour blended toward the background, so it adapts to light and dark themes."""
+        pal = QApplication.palette()
+        fg, bg = pal.color(QPalette.ColorRole.Text), pal.color(QPalette.ColorRole.Base)
+        t = 0.45  # how far toward the background
+        return QBrush(QColor(
+            round(fg.red() * (1 - t) + bg.red() * t),
+            round(fg.green() * (1 - t) + bg.green() * t),
+            round(fg.blue() * (1 - t) + bg.blue() * t)))
+
+    def changeEvent(self, event) -> None:
+        if event.type() == QEvent.Type.PaletteChange and hasattr(self, "row_of"):
+            self._icon_cache.clear()
+            self.update_rows()  # re-tint after a light/dark switch
+        super().changeEvent(event)
+
+    def update_rows(self) -> None:
+        dim = self.dim_brush()
+        for g in self.games.values():
+            row = self.row_of.get(g.id)
+            if row is None:
+                continue
+            it = [self.model.item(row, c) for c in range(len(HEADERS))]
+            fav = g.id in self.meta.favorites
+            last = self.meta.last_played.get(g.id, 0)
+            secs = self.meta.playtime.get(g.id, 0)
+            status = self.status_text(g)
+
+            it[C_FAV].setData(fav, ROLE_FAV)
+            it[C_FAV].setData(0 if fav else 1, ROLE_SORT)
+            it[C_FAV].setToolTip("Remove from favorites" if fav else "Add to favorites")
+            it[C_NAME].setIcon(self.icon_for(g, self.is_installed(g)))
+            it[C_NAME].setText(g.name)
+            it[C_NAME].setData(g.name.lower(), ROLE_SORT)
+            it[C_NAME].setData(self.is_installed(g), ROLE_INSTALLED)
+            it[C_NAME].setData(fav, ROLE_FAV)
+            it[C_NAME].setData(bool(last), ROLE_RECENT)
+            it[C_NAME].setData(g.mp, ROLE_MP)
+            it[C_STATUS].setText(status)
+            it[C_STATUS].setData(status, ROLE_SORT)
+            it[C_SIZE].setText(format_size(g.size) if g.size is not None else "—")
+            it[C_SIZE].setData(g.size if g.size is not None else -1, ROLE_SORT)
+            it[C_MP].setText(MP_LABELS.get(g.mp, MP_LABELS["0"])[0])
+            it[C_MP].setData(int(g.mp), ROLE_SORT)
+            it[C_LAST].setText(format_when(last) if last else "—")
+            it[C_LAST].setData(last, ROLE_SORT)
+            it[C_TIME].setText(format_playtime(secs))
+            it[C_TIME].setData(secs, ROLE_SORT)
+            # Not-installed games are dimmed (selection colours still win when selected).
+            for item in it:
+                if self.is_installed(g):
+                    item.setData(None, Qt.ItemDataRole.ForegroundRole)  # back to the theme's text colour
                 else:
-                    print("Failed to install the game for some reason")
-                    currently_downloading = False
+                    item.setForeground(dim)
+        self.proxy.invalidateFilter()
+        self.count_label.setText(f"{len(self.games)} games · {len(self._installed_cache)} installed")
+        self.refresh_selection()
 
-            # safely update UI from main thread
-            app.after(0, after)
+    def refresh_installed(self) -> None:
+        self._installed_cache = self.store.installed_ids()
+        self.compute_health()
+        self.update_rows()
 
-        threading.Thread(target=task, daemon=True).start()
-        if selected_game is not None:
-            select_game(selected_game)
+    def _reselect(self) -> None:
+        if self.selected_id:
+            for r in range(self.proxy.rowCount()):
+                idx = self.proxy.index(r, C_NAME)
+                if idx.data(ROLE_ID) == self.selected_id:
+                    self.list.setCurrentIndex(idx)
+                    return
+        self.selected_id = None
+        self.list.clearSelection()
+        self.list.setCurrentIndex(QModelIndex())
+        self.refresh_selection()
 
-def uninstall_game():
-    print('gonna nuke')
-    game_id = gameIDs[selected_game]
-    section, install_path = get_installed_game_info(game_id)
-    if not section or not install_path:
-        tk.messagebox.showerror("Error", "Could not find installation information for this game.")
-        return
+    def _on_search(self, text: str) -> None:
+        self.proxy.needle = text.strip().lower()
+        self.proxy.invalidateFilter()
+        self._reselect()
 
-    full_game_path = os.path.join(install_path, get_first_folder_in_executable_path(game_id, section))
-    # Ask for confirmation
-    if not tk.messagebox.askyesno("Confirm Uninstall", f"Are you sure you want to uninstall {gameNames[selected_game]}? This will delete: {full_game_path}"):
-        return
-    try:
-        shutil.rmtree(full_game_path)
-        print(f'nuke successful. Deleted {full_game_path}')
-    except Exception as e:
-        tk.messagebox.showerror(
-            "Error",
-            f"Failed to uninstall the game. Error: {e}. Removing installation entry anyway."
-        )
+    def _on_filters(self) -> None:
+        self.proxy.mode = self.show_combo.currentData()
+        self.proxy.mp = self.mp_combo.currentData()
+        self.proxy.invalidateFilter()
+        self._reselect()
 
-    # remove desktop shortcut if it exists
-    remove_desktop_shortcut(gameNames[selected_game])
+    def _on_current_changed(self, current: QModelIndex, _prev: QModelIndex) -> None:
+        if current.isValid():
+            self.selected_id = current.sibling(current.row(), C_NAME).data(ROLE_ID)
+            self.refresh_selection()
 
-    with open(f"{bandit_program_data}/installed_games.json", "r") as f:
-        installed_games = json.load(f)
+    def _on_activated(self, idx: QModelIndex) -> None:
+        game = self.games.get(idx.sibling(idx.row(), C_NAME).data(ROLE_ID))
+        if game and self.state_for(game) == "installed":
+            self.play(game)
 
-    installed_games.get(section, {}).pop(game_id, None)
+    def pick_random(self) -> None:
+        n = self.proxy.rowCount()
+        if not n:
+            QMessageBox.information(self, "Random Game", "No games to pick from with the current filters.")
+            return
+        idx = self.proxy.index(random.randrange(n), C_NAME)
+        self.list.setCurrentIndex(idx)
+        self.list.scrollTo(idx)
 
-    with open(f"{bandit_program_data}/installed_games.json", "w") as f:
-        json.dump(installed_games, f, indent=4)
+    # ---- selection: details panel + action states --------------------- #
 
-    # Handle prereqs
-    with open(f"{bandit_userdata}/installed_prereqs.json", "r") as f:
-        prereqs = json.load(f)
-
-    if game_id in prereqs:
-        del prereqs[game_id]
-        with open(f"{bandit_userdata}/installed_prereqs.json", "w") as f:
-            json.dump(prereqs, f, indent=4)
-        refresh_installed_prereqs()
-
-    # refresh UI
-    refresh_installed_games()
-    update_game_list_colors()
-    send_telemetry("game_uninstalled", game_id=game_id, game_name=gameNames[selected_game])
-    infoLabel.configure(text="Game uninstalled successfully.")
-
-    if selected_game is not None:
-        select_game(selected_game)
-
-gameInfoLabel = ctk.CTkLabel(app,
-    text="Welcome to Bandit!\nSelect a game to get started.",
-    anchor="w", justify="left",
-    font=(None, 14)
-)
-gameInfoLabel.pack(fill="x", padx=20, pady=(0,10))
-
-# Download/play button
-ipButton = ctk.CTkButton(app,
-    text="Install/Play",
-    command=install_or_play,
-    font=(None, 14)
-)
-ipButton.pack(fill="x", pady=10, padx=20)
-ipButton.configure(state="disabled")
-
-uninstallButton = ctk.CTkButton(app,
-    text="Uninstall",
-    command=uninstall_game,
-    font=(None, 14)
-)
-uninstallButton.pack(fill="x", pady=10, padx=20)
-uninstallButton.configure(state="disabled")
-
-# Info label for download speed, percentage and ETA.
-infoLabel = ctk.CTkLabel(app,
-    text="",
-    font=("Courier", 18),
-    anchor="w",
-)
-infoLabel.pack(pady=10, padx=20)
-
-progressBar = ctk.CTkProgressBar(app)
-progressBar.set(0)
-progressBar.pack(fill="x", expand=False, padx=20, pady=10)
-
-search_buffer = ""
-last_key_time = 0
-
-def key_pressed(event):
-    global search_buffer, last_key_time
-
-    # Ignore modifier keys and non-printable characters
-    if not event.char or not event.char.isprintable():
-        return
-
-    focus_widget = app.focus_get()
-    if focus_widget is not None:
-        focus_toplevel = focus_widget.winfo_toplevel()
-        if focus_toplevel is not app:
+    def refresh_selection(self) -> None:
+        game = self.selected_game()
+        busy = self.active is not None
+        if not game:
+            self.stack.setCurrentIndex(0)
+            for a in (self.act_primary, self.act_fav, self.act_args, self.act_steam, self.act_browse, self.act_move,
+                      self.act_shortcut, self.act_repair, self.act_uninstall):
+                a.setEnabled(False)
+            self.act_primary.setText("Play")
             return
 
-        focus_class = focus_widget.winfo_class()
-        if focus_class in ("Entry", "CTkEntry", "Text", "TEntry"):
+        st = self.state_for(game)
+        installed = self.is_installed(game)
+        label, desc = MP_LABELS.get(game.mp, MP_LABELS["0"])
+        section, path = self.store.find(game.id) if installed else (None, None)
+        secs = self.meta.playtime.get(game.id, 0)
+        last = self.meta.last_played.get(game.id, 0)
+        args = self.meta.launch_args.get(game.id, "")
+
+        self.stack.setCurrentIndex(1)
+        self.d_title.setText(game.name)
+        self.f_status.setText(self.status_text(game) or "Not installed")
+        self.f_size.setText(format_size(game.size))
+        self.f_mp.setText(f"{label} — {desc}")
+        if OS == "Linux":
+            if "Linux" in game.sources:
+                self.f_platform.setText("Native Linux" + (" (Windows build also available)"
+                                                           if "Windows" in game.sources else ""))
+            else:
+                self.f_platform.setText("Windows (runs through Proton)")
+        self.form.setRowVisible(self.f_platform, OS == "Linux")
+        self.f_location.setText(path or "—")
+        self.f_played.setText(format_playtime(secs))
+        self.f_last.setText(format_when(last) if last else "Never")
+        self.f_updated.setText(self._game_update_text(game))
+        self.f_args.setText(args or "—")
+        self.form.setRowVisible(self.f_location, installed)
+
+        text, enabled = {
+            "downloading": ("Cancel Download", True),
+            "working": ("Working…", False),
+            "running": ("Quit Game", True),
+            "installed": ("Play", True),
+            "queued": ("Remove from Queue", True),
+            "available": ("Add to Queue" if busy else "Install", True),
+        }[st]
+        self.act_primary.setText(text)
+        self.act_primary.setEnabled(enabled)
+        self.btn_primary.setText(text)
+        self.btn_primary.setEnabled(enabled)
+
+        idle_installed = st == "installed" and not busy
+        self.act_uninstall.setEnabled(idle_installed)
+        self.btn_uninstall.setEnabled(idle_installed)
+        self.btn_uninstall.setVisible(installed)
+        self.act_repair.setEnabled(idle_installed or (st == "installed" and busy))
+        self.act_move.setEnabled(idle_installed)
+        self.act_browse.setEnabled(installed)
+        self.act_shortcut.setEnabled(installed)
+        self.act_args.setEnabled(True)
+        self.act_fav.setEnabled(True)
+        fav = game.id in self.meta.favorites
+        self.act_fav.setChecked(fav)
+
+        appid = game.steam_appid
+        self.act_steam.setEnabled(bool(appid))
+        self.banner.setVisible(bool(appid))
+        if appid:
+            hero = self.art.get(appid, "hero") or self.art.get(appid, "header")
+            self.banner.set_art(hero, self.art.get(appid, "logo"))
+
+    def _game_update_text(self, game: Game) -> str:
+        self.f_updated.setToolTip("")
+        if game.id in self._game_update_dates:
+            timestamp = self._game_update_dates[game.id]
+            return format_when(timestamp) if timestamp else "Unavailable"
+        if game.id in self._game_update_errors:
+            self.f_updated.setToolTip(self._game_update_errors[game.id])
+            return "Could not check"
+
+        if game.id not in self._game_update_pending:
+            self._game_update_pending.add(game.id)
+            self.run_task(
+                lambda: game_last_updated(game),
+                lambda timestamp, error, gid=game.id: self._on_game_update_checked(gid, timestamp, error),
+            )
+        return "Checking…"
+
+    def _on_game_update_checked(self, game_id: str, timestamp: int | None, error: Exception | None) -> None:
+        self._game_update_pending.discard(game_id)
+        if error:
+            self._game_update_errors[game_id] = str(error)
+            game = self.games.get(game_id)
+            if game:
+                self.set_status(f"Couldn't check the Bandit update date for {game.name}: {error}")
+        else:
+            self._game_update_dates[game_id] = timestamp
+        if self.selected_id == game_id:
+            self.refresh_selection()
+
+    def _on_context_menu(self, pos) -> None:
+        idx = self.list.indexAt(pos)
+        if not idx.isValid():
+            return
+        self.list.setCurrentIndex(idx)
+        menu = QMenu(self)
+        menu.addAction(self.act_primary)
+        menu.addAction(self.act_fav)
+        menu.addAction(self.act_args)
+        if self.is_installed(self.selected_game()):
+            menu.addSeparator()
+            for a in (self.act_browse, self.act_move, self.act_shortcut, self.act_repair):
+                menu.addAction(a)
+            menu.addSeparator()
+            menu.addAction(self.act_uninstall)
+        menu.exec(self.list.viewport().mapToGlobal(pos))
+
+    # ---- favorites / launch options ---------------------------------- #
+
+    def set_favorite(self, on: bool) -> None:
+        if self.selected_id:
+            self._set_fav(self.selected_id, on)
+
+    def _set_fav(self, game_id: str, on: bool) -> None:
+        (self.meta.favorites.add if on else self.meta.favorites.discard)(game_id)
+        self.meta.save()
+        self.update_rows()
+        if self.proxy.mode == "favorites":
+            self._reselect()
+
+    def edit_launch_options(self) -> None:
+        game = self.selected_game()
+        if not game:
+            return
+        text, ok = QInputDialog.getText(
+            self, "Launch Options", f"Command-line arguments for {game.name}:",
+            QLineEdit.EchoMode.Normal, self.meta.launch_args.get(game.id, ""))
+        if not ok:
+            return
+        text = text.strip()
+        if text:
+            self.meta.launch_args[game.id] = text
+        else:
+            self.meta.launch_args.pop(game.id, None)
+        self.meta.save()
+        self.refresh_selection()
+
+    # ---- primary action ---------------------------------------------- #
+
+    def on_primary(self) -> None:
+        game = self.selected_game()
+        if not game:
+            return
+        st = self.state_for(game)
+        if st == "downloading":
+            self.cancel_active()
+        elif st == "running":
+            self.quit_game()
+        elif st == "installed":
+            self.play(game)
+        elif st == "queued":
+            self.queue = [j for j in self.queue if j.game.id != game.id]
+            self.set_status(f"Removed {game.name} from the queue.")
+            self.update_rows()
+        elif st == "available":
+            self.request_install(game)
+
+    def cancel_active(self) -> None:
+        if isinstance(self.worker, DownloadWorker):
+            self.worker.cancel()
+            self.cancel_btn.setEnabled(False)
+            self.dl_detail.setText("Cancelling…")
+
+    # ---- centered download panel -------------------------------------- #
+
+    def dl_show(self, name: str) -> None:
+        self.dl_title.setText(f"Downloading — {name}")
+        self.dl_bar.setRange(0, 1000)
+        self.dl_bar.setValue(0)
+        self.dl_pct.setText("0.0%")
+        self.dl_detail.setText("Starting…")
+        self._sync_dl_pad()
+        self.cancel_btn.setEnabled(True)
+        self.cancel_btn.show()
+        self.dl_panel.show()
+
+    def dl_busy(self, title: str, name: str) -> None:
+        self.dl_title.setText(f"{title} — {name}")
+        self.dl_bar.setRange(0, 0)
+        self.dl_pct.setText("")
+        self.dl_detail.setText("")
+        self.cancel_btn.hide()
+        self._sync_dl_pad()
+        self.dl_panel.show()
+
+    def _sync_dl_pad(self) -> None:
+        self.dl_pad.setFixedWidth(self.cancel_btn.sizeHint().width())
+
+    def dl_hide(self) -> None:
+        self.dl_panel.hide()
+        self.dl_bar.setRange(0, 1000)
+        self.dl_bar.setValue(0)
+
+    # ---- install queue ------------------------------------------------ #
+
+    def request_install(self, game: Game, repair: bool = False) -> None:
+        """Ask the questions (version, location, space) now, then queue the download."""
+        if self.state_for(game) in ("downloading", "queued"):
             return
 
-    current_time = time.time()
-    
-    # If it's been more than 1 second since the last keypress, reset the search buffer
-    if current_time - last_key_time > 1.0:
-        search_buffer = ""
+        if repair:
+            source, dest = self.store.find(game.id)
+            if not source or not dest:
+                QMessageBox.critical(self, "Repair", "Could not find installation information.")
+                return
+        else:
+            source = OS
+            if OS == "Linux":
+                if "Linux" in game.sources and "Windows" in game.sources:
+                    box = QMessageBox(self)
+                    box.setWindowTitle("Which version?")
+                    box.setText("This game has a Linux and a Windows version. Which would you like to install?")
+                    native = box.addButton("Native Linux (recommended)", QMessageBox.ButtonRole.AcceptRole)
+                    win = box.addButton("Windows (needs Proton)", QMessageBox.ButtonRole.AcceptRole)
+                    box.addButton(QMessageBox.StandardButton.Cancel)
+                    box.exec()
+                    clicked = box.clickedButton()
+                    if clicked is win:
+                        source = "Windows"
+                    elif clicked is not native:
+                        return
+                elif "Windows" in game.sources:
+                    source = "Windows"
 
-    search_buffer += event.char.lower()
-    last_key_time = current_time
+            dest = GAMES_FOLDER
+            if self.settings.get("Ask where to install games to", False):
+                dest = QFileDialog.getExistingDirectory(self, "Choose install folder", GAMES_FOLDER)
+                if not dest:
+                    return
+            os.makedirs(dest, exist_ok=True)
 
-    current_tab = tabview.get()
+            if game.size is not None:
+                free = shutil.disk_usage(dest).free
+                if free < game.size and QMessageBox.question(
+                    self, "Not enough space",
+                    f"This game needs {format_size(game.size)} but only {format_size(free)} is free.\n"
+                    "Continue anyway?",
+                ) != QMessageBox.StandardButton.Yes:
+                    return
 
-    if current_tab == "All Games":
-        for index, name in enumerate(gameNames):
-            if name.lower().startswith(search_buffer):
-                select_game(index)
-                
-                # Scroll to the selected item (calculate percentage down the list)
-                fraction = index / max(1, len(gameNames))
-                game_list_frame._parent_canvas.yview_moveto(fraction)
-                break
-                
-    elif current_tab == "Installed":
-        # Reconstruct the sorted installed games list to match visual order
-        installed_data = []
-        for idx, gid in enumerate(gameIDs):
-            if gid in installedGames:
-                installed_data.append((gameNames[idx], idx))
-                
-        # Sort exactly how make_installed_games_list() does
-        installed_data.sort(key=lambda x: x[0].lower())
+        manifest = self.manifests.get(source)
+        folder = manifest.first_folder(game.id) if manifest else None
+        preexisting = repair or (bool(folder) and os.path.exists(os.path.join(dest, folder)))
+        self.queue.append(Job(game, source, dest, folder, preexisting, repair))
+        self.update_rows()
+        self._pump()
 
-        for visual_index, (name, original_index) in enumerate(installed_data):
-            if name.lower().startswith(search_buffer):
-                select_game(original_index)
-                
-                # Scroll to the selected item based on its position in the Installed tab
-                fraction = visual_index / max(1, len(installed_data))
-                installed_games_frame._parent_canvas.yview_moveto(fraction)
-                break
+    def _pump(self) -> None:
+        if self.active is None and self.queue:
+            self._start_job(self.queue.pop(0))
+        else:
+            self.update_rows()
 
-# Bind all key presses on the app window to the handler
-app.bind_all("<Key>", key_pressed)
+    def _start_job(self, job: Job) -> None:
+        game = job.game
+        send_telemetry(self.settings, "download_started", game)
+        w = DownloadWorker(f"{BASE_URL}/{job.source}/{game.id}.tar.gz", job.dest, game.name, parent=self)
+        w.result.connect(lambda ok, msg, j=job: self._on_install_done(j, ok, msg))
+        self._start_download(w, ("install", game.id))
 
-def check_for_updates():
-    try:
-        response = requests.get("https://api.github.com/repos/FelixBand/Bandit/releases/latest", timeout=10)
-        response.raise_for_status()
-        json_data = response.json()
-        if json_data["tag_name"] > version:
+    def _start_download(self, w: DownloadWorker, active: tuple[str, str | None]) -> None:
+        self.worker, self.active = w, active
+        w.progress.connect(self._on_progress)
+        self.set_status("")
+        self.dl_show(w.label)
+        w.start()
+        self.update_rows()
 
-            if tk.messagebox.askyesno('Download update?', "A new update is available: " + json_data["tag_name"] + ". You're running version " + version + ". Would you like to update?"):
+    def _on_progress(self, frac: float, text: str) -> None:
+        lines = text.split("\n")
+        if len(lines) > 1:  # known size: percentage + "speed • time left"
+            self.dl_bar.setRange(0, 1000)
+            self.dl_bar.setValue(int(frac * 1000))
+            self.dl_pct.setText(f"{frac * 100:.1f}%")
+            self.dl_detail.setText(lines[1])
+        else:  # unknown size: busy bar + bytes so far
+            self.dl_bar.setRange(0, 0)
+            self.dl_pct.setText("")
+            self.dl_detail.setText(text.split(": ", 1)[-1])
+
+    def _finish_download(self) -> None:
+        w = self.worker
+        self.worker, self.active = None, None
+        self.dl_hide()
+        if w:
+            w.wait(2000)
+            w.deleteLater()
+
+    def _on_install_done(self, job: Job, ok: bool, msg: str) -> None:
+        game = job.game
+        self._finish_download()
+        if ok:
+            self.store.add(job.source, game.id, job.dest)
+            self.set_status(f"{game.name} {'repaired' if job.repair else 'installed'}.")
+            send_telemetry(self.settings, "game_installed", game)
+            self._alert()
+        else:
+            if job.folder and not job.preexisting:  # drop the half-extracted folder
+                shutil.rmtree(os.path.join(job.dest, job.folder), ignore_errors=True)
+            self.set_status("Download cancelled." if msg == "cancelled" else "Download failed.")
+            if msg != "cancelled":
+                QMessageBox.warning(self, "Download failed", f"Failed to install {game.name}:\n{msg}")
+        self.refresh_installed()
+        self._pump()
+
+    def repair(self) -> None:
+        game = self.selected_game()
+        if not game or not self.is_installed(game):
+            return
+        if QMessageBox.question(
+            self, "Verify / Repair",
+            f"Bandit will re-download {game.name} over the existing files to fix anything missing "
+            f"or damaged ({format_size(game.size)}).\n\nContinue?",
+        ) == QMessageBox.StandardButton.Yes:
+            self.request_install(game, repair=True)
+
+    # ---- play --------------------------------------------------------- #
+
+    def play(self, game: Game) -> None:
+        if self.proc is not None:
+            QMessageBox.information(self, "Game already running", "Quit the running game before launching another.")
+            return
+        section, install_path = self.store.find(game.id)
+        manifest = self.manifests.get(section or "")
+        exe_rel = manifest.executables.get(game.id) if manifest else None
+        if not section or not install_path or not exe_rel:
+            QMessageBox.critical(self, "Error", "Unable to locate the installed game.")
+            return
+        game_path = os.path.normpath(os.path.join(install_path, exe_rel))
+
+        reqs = manifest.prereqs.get(game.id)
+        if OS == "Windows" and reqs and not self.prereqs.done(game.id):
+            self._install_prereqs(game, section, install_path, manifest, reqs, game_path)
+        else:
+            self._launch(game, section, game_path)
+
+    def _install_prereqs(self, game, section, install_path, manifest, reqs, game_path) -> None:
+        folder = manifest.first_folder(game.id) or ""
+        cmds = []
+        for req in reqs:
+            full = os.path.normpath(os.path.join(install_path, folder, req["path"]))
+            cmds.append(f'& "{full}" {req["command"]}' if req.get("command") else f'& "{full}"')
+        script = "; ".join(cmds)
+        encoded = base64.b64encode(script.encode("utf-16le")).decode("ascii")
+        ps = (f"Start-Process powershell -ArgumentList '-NoProfile -EncodedCommand {encoded}' "
+              "-Verb RunAs -Wait")
+
+        def work():
+            return subprocess.run(["powershell", "-Command", ps], capture_output=True, text=True, check=True)
+
+        def done(_res, err) -> None:
+            self.active = None
+            self.dl_hide()
+            self.set_status("")
+            if err:
+                detail = getattr(err, "stderr", "") or str(err)
+                QMessageBox.critical(self, "Prerequisite installation failed", detail)
+                self.update_rows()
+                self._pump()
+                return
+            self.prereqs.mark(game.id)
+            QMessageBox.information(self, "Success", "All prerequisites installed.")
+            self.update_rows()
+            self._launch(game, section, game_path)
+            self._pump()
+
+        self.active = ("prereq", game.id)
+        self.set_status("Approve the administrator prompt to continue.")
+        self.dl_busy("Installing prerequisites", game.name)
+        self.update_rows()
+        self.run_task(work, done)
+
+    def _launch(self, game: Game, section: str, game_path: str) -> None:
+        try:
+            raw_args = self.meta.launch_args.get(game.id, "")
+            try:
+                args = shlex.split(raw_args, posix=(OS != "Windows")) if raw_args else []
+            except ValueError as e:
+                QMessageBox.warning(self, "Launch Options", f"Couldn't parse the launch options:\n{e}")
+                return
+            proc = None
+            self.proc_mac_app = None
+            workdir = os.path.dirname(game_path)
+
+            if OS == "Darwin":
+                if game_path.endswith(".app"):
+                    cmd = ["open", "-W", game_path] + (["--args"] + args if args else [])
+                    proc = subprocess.Popen(cmd, cwd=workdir)
+                    self.proc_mac_app = (game_path, os.path.splitext(os.path.basename(game_path))[0])
+                elif os.path.exists(game_path):
+                    proc = subprocess.Popen([game_path] + args, cwd=workdir)
+            elif OS == "Linux" and section == "Windows":
+                proton = self._ensure_proton(then=lambda: self.play(game))
+                if not proton:
+                    return
+                proc = subprocess.Popen([proton, "run", game_path] + args, cwd=workdir, env=proton_env())
+            else:
+                if OS == "Linux" and not os.access(game_path, os.X_OK):
+                    try:
+                        os.chmod(game_path, os.stat(game_path).st_mode | 0o111)
+                    except OSError:
+                        pass
+                flags = subprocess.CREATE_NEW_PROCESS_GROUP if OS == "Windows" else 0
+                proc = subprocess.Popen([game_path] + args, cwd=workdir, creationflags=flags)
+
+            if proc is None:
+                QMessageBox.critical(self, "Error", "The game's executable could not be found.")
+                return
+            self.proc, self.proc_game = proc, game
+            self.proc_started = time.time()
+            self.meta.last_played[game.id] = int(self.proc_started)
+            self.meta.save()
+            self.set_status(f"{game.name} is running.")
+            send_telemetry(self.settings, "game_launched", game)
+            self.update_rows()
+        except Exception as e:  # noqa: BLE001
+            QMessageBox.critical(self, "Error", f"Failed to launch the game:\n{e}")
+
+    def _ensure_proton(self, then) -> str | None:
+        binary = find_proton_binary()
+        if binary:
+            return binary
+        if self.active:
+            QMessageBox.information(self, "Download in progress",
+                                    "Please wait for the current task to finish before launching a Windows game.")
+            return None
+        if QMessageBox.question(
+            self, "Download Proton-GE?",
+            "This game needs Proton-GE to run on Linux. Download the latest release now?",
+        ) != QMessageBox.StandardButton.Yes:
+            return None
+        w = DownloadWorker(latest_proton_ge_url, PROGRAM_DATA, "Proton-GE", fixed_folder="Proton-GE", parent=self)
+
+        def done(ok: bool, msg: str) -> None:
+            self._finish_download()
+            if ok:
+                send_telemetry(self.settings, "proton_ge_installed")
+                self.set_status("Proton-GE downloaded.")
+                then()
+            else:
+                self.set_status("Download cancelled." if msg == "cancelled" else "Download failed.")
+                if msg != "cancelled":
+                    QMessageBox.warning(self, "Proton-GE", f"Download failed:\n{msg}")
+            self.update_rows()
+            self._pump()
+
+        w.result.connect(done)
+        self._start_download(w, ("proton", None))
+        return None
+
+    # ---- running game ------------------------------------------------- #
+
+    def _game_finished(self) -> None:
+        game = self.proc_game
+        if game and self.proc_started:
+            elapsed = int(time.time() - self.proc_started)
+            if elapsed >= 1:
+                self.meta.playtime[game.id] = self.meta.playtime.get(game.id, 0) + elapsed
+                self.meta.save()
+        self.proc, self.proc_game, self.proc_mac_app, self.proc_started = None, None, None, 0.0
+        send_telemetry(self.settings, "game_exited", game)
+
+    def quit_game(self) -> None:
+        proc = self.proc
+        if proc is None:
+            return
+        self._terminate(proc)
+        self._game_finished()
+        self.set_status("Game closed.")
+        self.update_rows()
+
+    def _terminate(self, proc: subprocess.Popen) -> None:
+        if OS == "Darwin" and self.proc_mac_app:
+            path, name = self.proc_mac_app
+            for cmd in (["osascript", "-e", f'tell application "{name}" to quit'], ["pkill", "-f", path]):
                 try:
-                    webbrowser.open("https://github.com/FelixBand/Bandit/releases/latest", new=2)
-                    exit()
-                except Exception:
+                    subprocess.run(cmd, capture_output=True, text=True)
+                except OSError:
                     pass
-    except Exception as e:
-        print(f"An error occurred while checking for updates: {e}")
+        if OS == "Windows" and proc.poll() is None:
+            try:
+                subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True, text=True)
+            except OSError:
+                pass
+        try:
+            proc.terminate()
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            try:
+                proc.kill()
+                proc.wait(timeout=5)
+            except Exception:  # noqa: BLE001
+                pass
+        except Exception:  # noqa: BLE001
+            pass
 
-check_for_updates()
+    def _poll_process(self) -> None:
+        if self.proc is not None and self.proc.poll() is not None:
+            name = self.proc_game.name if self.proc_game else "Game"
+            self._game_finished()
+            self.set_status(f"{name} exited.")
+            self.update_rows()
 
-show_telemetry_disclaimer()
-app.after(1000, check_running_game_process)
+    # ---- uninstall / move / browse / shortcut ------------------------- #
 
-app.mainloop() # Up and away!
+    def _install_info(self, game: Game):
+        section, path = self.store.find(game.id)
+        manifest = self.manifests.get(section or "")
+        folder = manifest.first_folder(game.id) if manifest else None
+        return section, path, manifest, folder
+
+    def uninstall(self) -> None:
+        game = self.selected_game()
+        if not game or self.active:
+            return
+        section, install_path, _m, folder = self._install_info(game)
+        if not section or not install_path or not folder:
+            QMessageBox.critical(self, "Error", "Could not find installation information for this game.")
+            return
+        full = os.path.join(install_path, folder)
+        if QMessageBox.question(
+            self, "Uninstall",
+            f"Are you sure you want to uninstall {game.name}?\n\nThis will delete:\n{full}",
+        ) != QMessageBox.StandardButton.Yes:
+            return
+
+        self.active = ("uninstall", game.id)
+        self.set_status("")
+        self.dl_busy("Uninstalling", game.name)
+        self.update_rows()
+
+        def work():
+            shutil.rmtree(full)
+
+        def done(_res, err) -> None:
+            self.active = None
+            self.dl_hide()
+            if err:
+                QMessageBox.warning(self, "Error",
+                                    f"Failed to delete the game folder:\n{err}\n\nRemoving the entry anyway.")
+            self.store.remove(section, game.id)
+            self.prereqs.clear(game.id)
+            remove_desktop_shortcut(game.name)
+            send_telemetry(self.settings, "game_uninstalled", game)
+            self.set_status(f"{game.name} uninstalled.")
+            self.refresh_installed()
+            self._pump()
+
+        self.run_task(work, done)
+
+    def move_game(self) -> None:
+        game = self.selected_game()
+        if not game:
+            return
+        if self.active:
+            QMessageBox.information(self, "Move Game", "Please wait for the current task to finish.")
+            return
+        if self.proc_game and self.proc_game.id == game.id:
+            QMessageBox.information(self, "Move Game", "Quit the game before moving it.")
+            return
+        section, install_path, _m, folder = self._install_info(game)
+        if not section or not install_path or not folder:
+            QMessageBox.critical(self, "Move Game", "Could not determine the current install location.")
+            return
+        source = os.path.normpath(os.path.join(install_path, folder))
+        if not os.path.exists(source):
+            QMessageBox.critical(self, "Move Game", f"Game folder not found:\n{source}")
+            return
+        target_parent = QFileDialog.getExistingDirectory(self, "Move game to…", install_path)
+        if not target_parent:
+            return
+        target_parent = os.path.normpath(target_parent)
+        if os.path.abspath(target_parent) == os.path.abspath(install_path):
+            QMessageBox.information(self, "Move Game", "The game is already in that folder.")
+            return
+        target = os.path.join(target_parent, os.path.basename(source))
+        replace = os.path.exists(target)
+        if replace and QMessageBox.question(
+            self, "Move Game",
+            f"A folder named '{os.path.basename(source)}' already exists there. Replace it?",
+        ) != QMessageBox.StandardButton.Yes:
+            return
+
+        self.active = ("move", game.id)
+        self.set_status("")
+        self.dl_busy("Moving", game.name)
+        self.update_rows()
+
+        def work():
+            if replace:
+                shutil.rmtree(target)
+            shutil.move(source, target_parent)
+
+        def done(_res, err) -> None:
+            self.active = None
+            self.dl_hide()
+            if err:
+                self.set_status(f"Failed to move game: {err}")
+            else:
+                self.store.add(section, game.id, target_parent)
+                self.set_status(f"Moved {game.name}.")
+            self.refresh_installed()
+            self._pump()
+
+        self.run_task(work, done)
+
+    def browse_location(self) -> None:
+        game = self.selected_game()
+        if not game:
+            return
+        _s, install_path, _m, folder = self._install_info(game)
+        if not install_path or not folder:
+            return
+        path = os.path.join(install_path, folder)
+        if not os.path.exists(path):
+            QMessageBox.warning(self, "Browse File Location", f"Folder not found:\n{path}")
+            return
+        if OS == "Windows":
+            os.startfile(path)  # type: ignore[attr-defined]
+        elif OS == "Darwin":
+            subprocess.run(["open", "-R", path])
+        else:
+            subprocess.run(["xdg-open", path])
+
+    def make_shortcut(self) -> None:
+        game = self.selected_game()
+        if not game:
+            return
+        section, install_path, manifest, _f = self._install_info(game)
+        exe_rel = manifest.executables.get(game.id) if manifest else None
+        if not section or not install_path or not exe_rel:
+            QMessageBox.critical(self, "Error", "Could not find installation information for this game.")
+            return
+        exe = os.path.normpath(os.path.join(install_path, exe_rel))
+        if not os.path.exists(exe):
+            QMessageBox.warning(self, "Executable Missing", f"Executable not found:\n{exe}")
+            return
+        icon = None
+        icon_rel = manifest.icons.get(game.id)
+        if icon_rel:
+            icon = os.path.join(install_path, icon_rel.lstrip("/"))
+        try:
+            create_desktop_shortcut(game.name, exe, icon, via_proton=(OS == "Linux" and section == "Windows"))
+            QMessageBox.information(self, "Shortcut Created", f"Desktop shortcut created for {game.name}.")
+        except Exception as e:  # noqa: BLE001
+            QMessageBox.critical(self, "Error", f"Failed to create shortcut:\n{e}")
+
+    # ---- disk usage --------------------------------------------------- #
+
+    def show_disk_usage(self) -> None:
+        entries = []
+        for gid in self._installed_cache:
+            g = self.games.get(gid)
+            _s, path, _m, folder = self._install_info(g) if g else (None, None, None, None)
+            if g and path and folder:
+                entries.append((g.name, os.path.join(path, folder)))
+        if not entries:
+            QMessageBox.information(self, "Disk Usage", "No games are installed.")
+            return
+        self.set_status("Measuring installed games…")
+        self._show_progress(True, busy=True)
+
+        def work():
+            return sorted(((n, dir_size(p)) for n, p in entries), key=lambda e: -e[1])
+
+        def done(result, err) -> None:
+            if self.active is None:
+                self._show_progress(False)
+            self.set_status("")
+            if err:
+                QMessageBox.warning(self, "Disk Usage", str(err))
+                return
+            dlg = QDialog(self)
+            dlg.setWindowTitle("Disk Usage")
+            dlg.resize(420, 360)
+            tree = QTreeWidget()
+            tree.setHeaderLabels(["Game", "Size on disk"])
+            tree.setRootIsDecorated(False)
+            tree.setAlternatingRowColors(True)
+            total = 0
+            for name, size in result:
+                total += size
+                item = QTreeWidgetItem([name, format_size(size)])
+                item.setTextAlignment(1, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                tree.addTopLevelItem(item)
+            tree.header().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+            try:
+                free = format_size(shutil.disk_usage(GAMES_FOLDER).free)
+            except OSError:
+                free = "unknown"
+            summary = QLabel(f"Total: {format_size(total)}  ·  Free on install drive: {free}")
+            box = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+            box.rejected.connect(dlg.reject)
+            lay = QVBoxLayout(dlg)
+            lay.addWidget(tree)
+            lay.addWidget(summary)
+            lay.addWidget(box)
+            dlg.exec()
+
+        self.run_task(work, done)
+
+    # ---- UI scale ------------------------------------------------------ #
+
+    def on_scale_changed(self) -> None:
+        """Re-derive everything that was sized explicitly rather than from the app font."""
+        self.d_title.setFont(scaled_font(1.5, bold=True))
+        self.dl_title.setFont(scaled_font(1.0, bold=True))
+        self.dl_pct.setFont(scaled_font(1.3, bold=True))
+        fm = self.fontMetrics()
+        em = fm.horizontalAdvance("M")
+        self.progress.setFixedWidth(em * 16)
+        self.count_label.setMinimumWidth(em * 17)
+        self.btn_primary.setMinimumWidth(em * 10)
+        self.dl_col.setMaximumWidth(em * 48)
+        self.stack.setMinimumWidth(em * 22)
+        self.list.setMinimumWidth(em * 34)
+        self._sync_dl_pad()
+        side = int(fm.height() * 1.9)
+        self.list.setIconSize(QSize(side, side))
+        header = self.list.header()
+        header.setSectionResizeMode(C_FAV, QHeaderView.ResizeMode.Fixed)
+        header.resizeSection(C_FAV, int(em * 3))
+        for c in (C_STATUS, C_SIZE, C_MP, C_LAST, C_TIME):
+            header.setSectionResizeMode(c, QHeaderView.ResizeMode.ResizeToContents)
+        self.list.doItemsLayout()
+
+    def zoom(self, delta: int) -> None:
+        cur = clamp_scale(self.settings.get("UI scale", UI_SCALE_DEFAULT))
+        new = UI_SCALE_DEFAULT if delta == 0 else clamp_scale(cur + delta)
+        self.settings.set("UI scale", new)
+        apply_ui_scale(new)
+        self.on_scale_changed()
+        self.set_status(f"Interface scale: {new}%")
+
+    # ---- settings / close -------------------------------------------- #
+
+    def open_settings(self) -> None:
+        dlg = SettingsDialog(self.settings, self)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            name, flags = dlg.values()
+            for key, value in flags.items():
+                self.settings.data[key] = value
+            self.settings.data["UI scale"] = dlg.scale_slider.value()
+            self.settings.save()
+            self.set_account_name(name)
+
+    def closeEvent(self, event) -> None:
+        if isinstance(self.worker, DownloadWorker) and self.worker.isRunning():
+            if QMessageBox.question(
+                self, "Download in progress", "A download is still running. Cancel it and quit?",
+            ) != QMessageBox.StandardButton.Yes:
+                event.ignore()
+                return
+            self.queue.clear()
+            self.worker.cancel()
+            self.worker.wait(5000)
+        if self.proc is not None:
+            self._game_finished()  # bank the playtime so far
+        for t in list(self._tasks):
+            t.wait(2000)
+        self.art.shutdown()
+        self.qs.setValue("geometry", self.saveGeometry())
+        self.qs.setValue("splitter", self.splitter.saveState())
+        self.qs.setValue("header", self.list.header().saveState())
+        self.qs.setValue("show_filter", self.show_combo.currentData())
+        event.accept()
+
+
+def main() -> int:
+    app = QApplication(sys.argv)
+    app.setApplicationName("Bandit")
+    app.setOrganizationName("Bandit")
+    app.setApplicationVersion(VERSION)
+    apply_ui_scale(read_json(SETTINGS_PATH, {}).get("UI scale", UI_SCALE_DEFAULT))
+    # No custom style or stylesheet: Qt uses the platform's native look (and dark mode).
+
+    for icon_file in ("icon.ico", "icon.png"):
+        path = resource_path(icon_file)
+        if os.path.exists(path):
+            app.setWindowIcon(QIcon(path))
+            break
+
+    error = ensure_program_data()
+    if error:
+        QMessageBox.critical(None, "Bandit", error)
+        return 1
+
+    window = MainWindow()
+    window.show()
+    return app.exec()
+
+
+if __name__ == "__main__":
+    sys.exit(main())
