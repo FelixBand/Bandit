@@ -736,9 +736,16 @@ def create_desktop_shortcut(display_name: str, exe: str, icon: str | None, via_p
     else:
         if via_proton:
             proton = find_proton_binary() or "proton"
+            ext = os.path.splitext(exe)[1].lower()
+            if ext in (".bat", ".cmd"):
+                target = f'cmd.exe /c call "{exe}"'
+            elif ext == ".vbs":
+                target = f'wscript.exe "{exe}"'
+            else:
+                target = f'"{exe}"'
             exec_line = (f'env "STEAM_COMPAT_DATA_PATH={PFX_ROOT}" '
                          f'"STEAM_COMPAT_CLIENT_INSTALL_PATH={PFX_ROOT}" '
-                         f'"WINEDLLOVERRIDES=dinput8,winhttp,winmm=n,b" "{proton}" run "{exe}"')
+                         f'"WINEDLLOVERRIDES=dinput8,winhttp,winmm=n,b" "{proton}" run {target}')
         else:
             exec_line = f'"{exe}"'
         path = os.path.join(desk, f"{safe}.desktop")
@@ -1387,6 +1394,13 @@ class MainWindow(QMainWindow):
         self.d_title.setFont(f)
         pl.addWidget(self.d_title)
 
+        self.btn_primary = QPushButton("Play")
+        self.btn_primary.setDefault(True)
+        self.btn_primary.setMinimumHeight(44)
+        self.btn_primary.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.btn_primary.clicked.connect(self.on_primary)
+        pl.addWidget(self.btn_primary)
+
         form = QFormLayout()
         form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
         self.f_status, self.f_size, self.f_mp, self.f_platform = QLabel(), QLabel(), QLabel(), QLabel()
@@ -1409,13 +1423,8 @@ class MainWindow(QMainWindow):
         buttons = QHBoxLayout()
         self.btn_uninstall = QPushButton("Uninstall…")
         self.btn_uninstall.clicked.connect(self.uninstall)
-        self.btn_primary = QPushButton("Play")
-        self.btn_primary.setDefault(True)
-        self.btn_primary.setMinimumWidth(130)
-        self.btn_primary.clicked.connect(self.on_primary)
         buttons.addStretch(1)
         buttons.addWidget(self.btn_uninstall)
-        buttons.addWidget(self.btn_primary)
         pl.addLayout(buttons)
         self.stack.addWidget(panel)
         self.splitter.addWidget(self.stack)
@@ -1891,9 +1900,9 @@ class MainWindow(QMainWindow):
             "downloading": ("Cancel Download", True),
             "working": ("Working…", False),
             "running": ("Quit Game", True),
-            "installed": ("Play", True),
+            "installed": ("▶ Play", True),
             "queued": ("Remove from Queue", True),
-            "available": ("Add to Queue" if busy else "Install", True),
+            "available": ("Add to Queue" if busy else "⇩ Install", True),
         }[st]
         self.act_primary.setText(text)
         self.act_primary.setEnabled(enabled)
@@ -2254,7 +2263,14 @@ class MainWindow(QMainWindow):
                 proton = self._ensure_proton(then=lambda: self.play(game))
                 if not proton:
                     return
-                proc = subprocess.Popen([proton, "run", game_path] + args, cwd=workdir, env=proton_env())
+                ext = os.path.splitext(game_path)[1].lower()
+                if ext in (".bat", ".cmd"):
+                    cmd = [proton, "run", "cmd.exe", "/c", "call", game_path] + args
+                elif ext == ".vbs":
+                    cmd = [proton, "run", "wscript.exe", game_path] + args
+                else:
+                    cmd = [proton, "run", game_path] + args
+                proc = subprocess.Popen(cmd, cwd=workdir, env=proton_env())
             else:
                 if OS == "Linux" and not os.access(game_path, os.X_OK):
                     try:
@@ -2262,7 +2278,14 @@ class MainWindow(QMainWindow):
                     except OSError:
                         pass
                 flags = subprocess.CREATE_NEW_PROCESS_GROUP if OS == "Windows" else 0
-                proc = subprocess.Popen([game_path] + args, cwd=workdir, creationflags=flags)
+                ext = os.path.splitext(game_path)[1].lower()
+                if OS == "Windows" and ext in (".bat", ".cmd"):
+                    cmd = ["cmd.exe", "/d", "/c", "call", game_path] + args
+                elif OS == "Windows" and ext == ".vbs":
+                    cmd = ["wscript.exe", game_path] + args
+                else:
+                    cmd = [game_path] + args
+                proc = subprocess.Popen(cmd, cwd=workdir, creationflags=flags)
 
             if proc is None:
                 QMessageBox.critical(self, "Error", "The game's executable could not be found.")
