@@ -1070,6 +1070,43 @@ class HeartDelegate(QStyledItemDelegate):
             painter.drawPath(path)
         painter.restore()
 
+class DimDelegate(QStyledItemDelegate):
+    """Draws the text of not-installed games dimmed.
+
+    Done by hand instead of with Qt.ForegroundRole, because some Qt styles/versions
+    (notably older Windows styles) ignore the foreground brush."""
+
+    def paint(self, painter: QPainter, option, index) -> None:
+        installed = index.sibling(index.row(), C_NAME).data(ROLE_INSTALLED)
+        if installed or (option.state & QStyle.StateFlag.State_Selected):
+            super().paint(painter, option, index)
+            return
+        opt = QStyleOptionViewItem(option)
+        self.initStyleOption(opt, index)
+        widget = option.widget
+        style = widget.style() if widget else QApplication.style()
+        text = opt.text
+        # measure the text area while the text is still set, then let the style draw
+        # everything else (background, icon, alternating rows) without the text
+        rect = style.subElementRect(QStyle.SubElement.SE_ItemViewItemText, opt, widget)
+        opt.text = ""
+        opt.features &= ~QStyleOptionViewItem.ViewItemFeature.HasDisplay
+        style.drawControl(QStyle.ControlElement.CE_ItemViewItem, opt, painter, widget)
+        if not text:
+            return
+        m = style.pixelMetric(QStyle.PixelMetric.PM_FocusFrameHMargin, opt, widget) + 1
+        rect = rect.adjusted(m, 0, -m, 0)
+        fg, bg = opt.palette.color(QPalette.ColorRole.Text), opt.palette.color(QPalette.ColorRole.Base)
+        t = 0.45  # how far toward the background
+        color = QColor(round(fg.red() * (1 - t) + bg.red() * t),
+                       round(fg.green() * (1 - t) + bg.green() * t),
+                       round(fg.blue() * (1 - t) + bg.blue() * t))
+        painter.save()
+        painter.setFont(opt.font)
+        painter.setPen(color)
+        painter.drawText(rect, int(opt.displayAlignment.value),
+                         opt.fontMetrics.elidedText(text, opt.textElideMode, rect.width()))
+        painter.restore()
 
 def scaled_font(factor: float = 1.0, bold: bool = False) -> QFont:
     base = QApplication.font()
@@ -1361,6 +1398,7 @@ class MainWindow(QMainWindow):
         self.list.setAlternatingRowColors(True)
         self.list.setSortingEnabled(True)
         self.list.setMouseTracking(True)
+        self.list.setItemDelegate(DimDelegate(self.list))
         self.heart = HeartDelegate(self.list)
         self.list.setItemDelegateForColumn(C_FAV, self.heart)
         self.list.viewport().installEventFilter(self)
