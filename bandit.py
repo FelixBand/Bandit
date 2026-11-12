@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import base64
+import glob
 import json
 import os
 import platform
+import plistlib
 import random
 import re
 import shlex
@@ -67,8 +69,15 @@ else:
     PROGRAM_DATA = "/etc/BanditGameLauncher"
 
 GAMES_FOLDER = "/Applications" if OS == "Darwin" else os.path.join(PROGRAM_DATA, "Games")
-WINDOWS_SUBDIR = os.path.join(PROGRAM_DATA, "Windows")  # Linux only: Windows-build manifests
-PFX_ROOT = os.path.join(HOME, ".banditpfx")  # Proton prefix (Linux)
+WIN_GAMES_FOLDER = os.path.join(PROGRAM_DATA, "Games")  # where Windows builds install (Linux + macOS)
+WINDOWS_SUBDIR = os.path.join(PROGRAM_DATA, "Windows")  # Linux + macOS: Windows-build manifests
+PFX_ROOT = os.path.join(HOME, ".banditpfx")  # Windows compatibility prefix: Proton (Linux) / CrossOver (macOS)
+WINE_PREFIX = os.path.join(PFX_ROOT, "pfx")
+HAS_WINDOWS_LAYER = OS in ("Linux", "Darwin")  # can run Windows builds (Proton / CrossOver)
+NATIVE_NAME = {"Linux": "Linux", "Darwin": "macOS"}.get(OS, OS)
+COMPAT_LAYER = "CrossOver" if OS == "Darwin" else "Proton"
+CROSSOVER_DOWNLOAD_PAGE = "https://www.codeweavers.com/crossover/download"
+WINE_DLL_OVERRIDES = "dinput8,winhttp,winmm=n,b"
 
 SETTINGS_PATH = os.path.join(USER_DATA, "settings.json")
 PREREQS_PATH = os.path.join(USER_DATA, "installed_prereqs.json")
@@ -124,12 +133,18 @@ def ensure_program_data() -> str | None:
     if OS == "Linux":
         os.makedirs(WINDOWS_SUBDIR, exist_ok=True)
         _setup_linux_prefix()
-    elif OS == "Darwin" and not os.access(PROGRAM_DATA, os.W_OK):
-        q = PROGRAM_DATA.replace('"', '\\"')
-        subprocess.run(
-            ["osascript", "-e", f'do shell script "chmod -R 777 \\"{q}\\"" with administrator privileges'],
-            check=False, timeout=30,
-        )
+    elif OS == "Darwin":
+        if not os.access(PROGRAM_DATA, os.W_OK):
+            q = PROGRAM_DATA.replace('"', '\\"')
+            subprocess.run(
+                ["osascript", "-e", f'do shell script "chmod -R 777 \\"{q}\\"" with administrator privileges'],
+                check=False, timeout=30,
+            )
+        for d in (WINDOWS_SUBDIR, WIN_GAMES_FOLDER):  # Windows builds + their manifests (CrossOver)
+            try:
+                os.makedirs(d, exist_ok=True)
+            except OSError:
+                pass
     return None
 
 
@@ -181,6 +196,7 @@ class Settings:
         "Enable Telemetry": True,
         "Check for updates on startup": True,
         "UI scale": 125,
+        "CrossOver path": "",
         "Account name": "",
         "_first_launch": True,
     }
@@ -206,6 +222,17 @@ class Settings:
         return (self.data.get("Account name") or "").strip() or default_account_name()
 
 
+def prefix_roaming_dirs() -> list[str]:
+    """AppData\\Roaming folders of the Windows users inside the compatibility prefix."""
+    users = os.path.join(WINE_PREFIX, "drive_c", "users")
+    names = ["steamuser"] if OS == "Linux" else []  # Proton always uses steamuser
+    try:
+        names += [n for n in sorted(os.listdir(users)) if n.lower() != "public" and n not in names]
+    except OSError:
+        pass
+    return [os.path.join(users, n, "AppData", "Roaming") for n in names]
+
+
 def write_account_name_files(name: str) -> None:
     """Games read the player's name from these files."""
     if not name:
@@ -217,9 +244,8 @@ def write_account_name_files(name: str) -> None:
         folders = [os.path.join(appdata, g, "settings") for g in ("Goldberg SteamEmu Saves", "Goldberg SocialClub Emu Saves")]
     else:
         folders = [os.path.join(HOME, ".local", "share", g, "settings") for g in ("Goldberg SteamEmu Saves", "Goldberg SocialClub Emu Saves")]
-        if OS == "Linux":
-            roaming = os.path.join(PFX_ROOT, "pfx", "drive_c", "users", "steamuser", "AppData", "Roaming")
-            folders += [os.path.join(roaming, g, "settings") for g in ("Goldberg SteamEmu Saves", "Goldberg SocialClub Emu Saves")]
+        if HAS_WINDOWS_LAYER:  # same folders inside the prefix, for Windows builds
+            folders += [os.path.join(r, g, "settings") for r in prefix_roaming_dirs() for g in ("Goldberg SteamEmu Saves", "Goldberg SocialClub Emu Saves")]
     for folder in folders:
         try:
             os.makedirs(folder, exist_ok=True)
@@ -240,7 +266,7 @@ class Game:
 
 
 def _section_dir(section: str) -> str:
-    return WINDOWS_SUBDIR if (section == "Windows" and OS == "Linux") else PROGRAM_DATA
+    return WINDOWS_SUBDIR if (section == "Windows" and HAS_WINDOWS_LAYER) else PROGRAM_DATA
 
 
 def load_catalog() -> dict[str, Game]:
@@ -268,7 +294,7 @@ def load_catalog() -> dict[str, Game]:
                 games[gid] = Game(gid, name, size, mp, {source}, steam)
 
     read(os.path.join(PROGRAM_DATA, "list.txt"), OS)
-    if OS == "Linux":
+    if HAS_WINDOWS_LAYER:
         read(os.path.join(WINDOWS_SUBDIR, "list.txt"), "Windows")
     return games
 
@@ -321,7 +347,7 @@ class InstalledStore:
 
     @staticmethod
     def _sections() -> list[str]:
-        return [OS] + (["Windows"] if OS == "Linux" else [])
+        return [OS] + (["Windows"] if HAS_WINDOWS_LAYER else [])
 
     def installed_ids(self) -> set[str]:
         data = self._read()
@@ -404,7 +430,7 @@ def dir_size(path: str) -> int:
 def sync_library() -> None:
     """Fetch the latest catalog + manifests. Raises on failure (caller keeps the cached copy)."""
     jobs = [(OS, PROGRAM_DATA)]
-    if OS == "Linux":
+    if HAS_WINDOWS_LAYER:
         jobs.append(("Windows", WINDOWS_SUBDIR))
     for remote_os, folder in jobs:
         os.makedirs(folder, exist_ok=True)
@@ -667,6 +693,175 @@ def proton_env() -> dict:
     return env
 
 
+# ---- CrossOver (macOS): runs Windows builds the way Proton does on Linux ---- #
+
+@dataclass
+class CrossOver:
+    app: str        # .../CrossOver.app
+    root: str       # .../Contents/SharedSupport/CrossOver  (what CrossOver calls CX_ROOT)
+    loader: str     # the Wine loader that runs a Windows program
+    server: str     # the matching wineserver
+    unix_dir: str   # .../lib/wine/<arch>-unix
+    arm64: bool     # True: native arm64 Wine (FEX build); False: x86_64 Wine under Rosetta 2
+
+
+def crossover_from_app(app: str) -> CrossOver | None:
+    """Validate a CrossOver.app and locate its Wine loader + wineserver (None if it isn't usable)."""
+    root = os.path.join(app, "Contents", "SharedSupport", "CrossOver")
+    if not os.path.isdir(os.path.join(root, "lib", "wine")):
+        return None
+
+    def exe(*parts: str) -> str | None:
+        p = os.path.join(root, *parts)
+        return p if os.path.isfile(p) and os.access(p, os.X_OK) else None
+
+    loader = exe("lib", "wine", "x86_64-unix", "wine")
+    server = exe("bin", "wineserver") or exe("bin", "wineserver-x86")
+    if loader and server:
+        return CrossOver(app, root, loader, server, os.path.join(root, "lib", "wine", "x86_64-unix"), False)
+    loader = exe("lib", "wine", "aarch64-unix", "wine.app", "Contents", "MacOS", "wine")
+    server = exe("bin", "wineserver-arm64")
+    if loader and server:
+        return CrossOver(app, root, loader, server, os.path.join(root, "lib", "wine", "aarch64-unix"), True)
+    return None
+
+
+def find_crossover(custom: str = "") -> CrossOver | None:
+    """The user's chosen CrossOver.app first, then the usual places, then Spotlight."""
+    candidates: list[str] = [custom] if custom else []
+    for base in ("/Applications", os.path.join(HOME, "Applications")):
+        candidates.append(os.path.join(base, "CrossOver.app"))
+        candidates += sorted(glob.glob(os.path.join(base, "CrossOver*.app")))  # e.g. CrossOver Preview
+    seen: set[str] = set()
+    for app in candidates:
+        if app not in seen:
+            seen.add(app)
+            cx = crossover_from_app(app)
+            if cx:
+                return cx
+    try:
+        out = subprocess.run(
+            ["mdfind", "kMDItemCFBundleIdentifier == 'com.codeweavers.CrossOver'"],
+            capture_output=True, text=True, timeout=5).stdout.splitlines()
+    except (OSError, subprocess.SubprocessError):
+        out = []
+    for app in out:
+        if app.endswith(".app") and app not in seen:
+            seen.add(app)
+            cx = crossover_from_app(app)
+            if cx:
+                return cx
+    return None
+
+
+def is_apple_silicon() -> bool:
+    try:
+        r = subprocess.run(["sysctl", "-n", "hw.optional.arm64"], capture_output=True, text=True, timeout=5)
+        return r.stdout.strip() == "1"
+    except (OSError, subprocess.SubprocessError):
+        return platform.machine() == "arm64"
+
+
+def rosetta_installed() -> bool:
+    return os.path.exists("/Library/Apple/usr/libexec/oah/libRosettaRuntime")
+
+
+def crossover_env(cx: CrossOver) -> dict:
+    """Environment for running CrossOver's Wine straight against Bandit's own prefix."""
+    env = os.environ.copy()
+    win_dlls = os.path.join(cx.root, "lib", "wine", "x86_64-windows")
+    env.update({
+        "CX_ROOT": cx.root,
+        "CX_HOME": os.path.join(HOME, "Library", "Application Support", "CrossOver"),
+        "WINEPREFIX": WINE_PREFIX,
+        "WINELOADER": cx.loader,
+        "WINESERVER": cx.server,
+        "WINEDLLPATH": ":".join(p for p in (win_dlls, cx.unix_dir, env.get("WINEDLLPATH", "")) if p),
+        "PATH": os.path.join(cx.root, "bin") + ":" + env.get("PATH", ""),
+        "WINEDLLOVERRIDES": WINE_DLL_OVERRIDES,
+    })
+    d3d = os.path.join(cx.root, "lib64", "apple_gptk", "external", "libd3dshared.dylib")
+    if os.path.exists(d3d):
+        env["CX_APPLEGPTK_LIBD3DSHARED_PATH"] = d3d
+    env.setdefault("ROSETTA_ADVERTISE_AVX", "1")   # many modern games refuse to start without AVX
+    env.setdefault("WINEDEBUG", "fixme-all")       # keep the log readable
+    return env
+
+
+def prefix_ready() -> bool:
+    return all(os.path.exists(os.path.join(WINE_PREFIX, f)) for f in ("system.reg", "user.reg"))
+
+
+def create_prefix(cx: CrossOver) -> None:
+    """First-launch setup: let CrossOver's Wine build the Windows environment. Raises on failure."""
+    os.makedirs(WINE_PREFIX, exist_ok=True)
+    env = crossover_env(cx)
+    env.pop("WINEDLLOVERRIDES", None)
+    log_path = os.path.join(USER_DATA, "crossover-setup.log")
+    os.makedirs(USER_DATA, exist_ok=True)
+    with open(log_path, "w") as log:
+        subprocess.run([cx.loader, "wineboot", "--init"], env=env, stdout=log, stderr=subprocess.STDOUT,
+                       timeout=600, check=False)
+        subprocess.run([cx.server, "-w"], env=env, stdout=log, stderr=subprocess.STDOUT,
+                       timeout=300, check=False)
+    if not prefix_ready():
+        raise RuntimeError(f"CrossOver didn't finish creating the Windows environment.\nSee {log_path}")
+
+
+def wine_target(game_path: str) -> list[str]:
+    """What to hand the Wine loader for this file (batch/script files go through their interpreter)."""
+    ext = os.path.splitext(game_path)[1].lower()
+    dos = "Z:" + game_path.replace("/", "\\")  # Wine maps the Mac's whole filesystem to Z:
+    if ext in (".bat", ".cmd"):
+        return ["cmd.exe", "/c", "call", dos]
+    if ext == ".vbs":
+        return ["wscript.exe", dos]
+    return [game_path]
+
+
+def create_crossover_shortcut(display_name: str, exe: str, icon: str | None, cx: CrossOver) -> None:
+    """Desktop launcher for a Windows game: a tiny .app that runs it through CrossOver. Raises on failure."""
+    desk, safe = desktop_path(), sanitize_filename(display_name) or "Game"
+    os.makedirs(desk, exist_ok=True)
+    app = os.path.join(desk, f"{safe}.app")
+    shutil.rmtree(app, ignore_errors=True)
+    macos, resources = os.path.join(app, "Contents", "MacOS"), os.path.join(app, "Contents", "Resources")
+    os.makedirs(macos)
+    os.makedirs(resources)
+
+    env = crossover_env(cx)
+    keys = ("CX_ROOT", "CX_HOME", "WINEPREFIX", "WINELOADER", "WINESERVER", "WINEDLLPATH", "PATH",
+            "WINEDLLOVERRIDES", "CX_APPLEGPTK_LIBD3DSHARED_PATH", "ROSETTA_ADVERTISE_AVX", "WINEDEBUG")
+    lines = ["#!/bin/bash"] + [f"export {k}={shlex.quote(env[k])}" for k in keys if k in env]
+    lines.append(f"cd {shlex.quote(os.path.dirname(exe))}")
+    lines.append("exec " + " ".join(shlex.quote(a) for a in [cx.loader] + wine_target(exe)))
+    launcher = os.path.join(macos, "launcher")
+    with open(launcher, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
+    os.chmod(launcher, 0o755)
+
+    plist = {
+        "CFBundleName": display_name,
+        "CFBundleDisplayName": display_name,
+        "CFBundleExecutable": "launcher",
+        "CFBundleIdentifier": "bandit.shortcut." + (re.sub(r"[^A-Za-z0-9]+", "-", safe).strip("-").lower() or "game"),
+        "CFBundlePackageType": "APPL",
+        "CFBundleInfoDictionaryVersion": "6.0",
+        "LSApplicationCategoryType": "public.app-category.games",
+        "NSHighResolutionCapable": True,
+    }
+    if icon and os.path.exists(icon):
+        try:  # sips reads .ico/.png/.jpg and writes .icns
+            subprocess.run(["sips", "-s", "format", "icns", icon, "--out", os.path.join(resources, "icon.icns")],
+                           capture_output=True, timeout=20, check=False)
+        except (OSError, subprocess.SubprocessError):
+            pass
+        if os.path.exists(os.path.join(resources, "icon.icns")):
+            plist["CFBundleIconFile"] = "icon"
+    with open(os.path.join(app, "Contents", "Info.plist"), "wb") as f:
+        plistlib.dump(plist, f)
+
+
 def version_tuple(tag: str) -> tuple[int, ...]:
     return tuple(int(x) for x in re.findall(r"\d+", tag)) or (0,)
 
@@ -693,13 +888,15 @@ def remove_desktop_shortcut(display_name: str) -> None:
     if OS == "Windows":
         names = [f"{safe}.lnk", f"{safe}.url", f"{display_name}.lnk", f"{display_name}.url"]
     elif OS == "Darwin":
-        names = [safe, display_name]
+        names = [safe, display_name, f"{safe}.app"]
     else:
         names = [f"{safe}.desktop", f"{display_name}.desktop"]
     for n in names:
         try:
             p = os.path.join(desk, n)
-            if os.path.exists(p):
+            if n.endswith(".app") and os.path.isdir(p) and not os.path.islink(p):
+                shutil.rmtree(p)
+            elif os.path.exists(p):
                 os.remove(p)
         except OSError:
             pass
@@ -1261,6 +1458,7 @@ class MainWindow(QMainWindow):
         self.proc: subprocess.Popen | None = None
         self.proc_game: Game | None = None
         self.proc_mac_app: tuple[str, str] | None = None
+        self.proc_cx: tuple[CrossOver, dict] | None = None
         self.proc_started = 0.0
 
         self._build_actions()
@@ -1321,6 +1519,7 @@ class MainWindow(QMainWindow):
         self.act_quit.setMenuRole(QAction.MenuRole.QuitRole)
 
         self.act_update = self._mk("Check for Updates…", lambda: self.check_updates(manual=True))
+        self.act_locate_cx = self._mk("Locate CrossOver…", self.locate_crossover)
         self.act_about = self._mk("About Bandit", self.show_about)
         self.act_about.setMenuRole(QAction.MenuRole.AboutRole)
 
@@ -1328,6 +1527,8 @@ class MainWindow(QMainWindow):
         mb = self.menuBar()
         m = mb.addMenu("&File")
         m.addAction(self.act_settings)
+        if OS == "Darwin":
+            m.addAction(self.act_locate_cx)
         m.addSeparator()
         m.addAction(self.act_quit)
 
@@ -1685,7 +1886,7 @@ class MainWindow(QMainWindow):
 
     def reload_library(self) -> None:
         self.manifests = {OS: Manifest(OS)}
-        if OS == "Linux":
+        if HAS_WINDOWS_LAYER:
             self.manifests["Windows"] = Manifest("Windows")
         self.games = load_catalog()
         self._installed_cache = self.store.installed_ids()
@@ -1922,13 +2123,13 @@ class MainWindow(QMainWindow):
         self.f_status.setText(self.status_text(game) or "Not installed")
         self.f_size.setText(format_size(game.size))
         self.f_mp.setText(f"{label} — {desc}")
-        if OS == "Linux":
-            if "Linux" in game.sources:
-                self.f_platform.setText("Native Linux" + (" (Windows build also available)"
-                                                           if "Windows" in game.sources else ""))
+        if HAS_WINDOWS_LAYER:
+            if OS in game.sources:
+                self.f_platform.setText(f"Native {NATIVE_NAME}" + (" (Windows build also available)"
+                                                                   if "Windows" in game.sources else ""))
             else:
-                self.f_platform.setText("Windows (runs through Proton)")
-        self.form.setRowVisible(self.f_platform, OS == "Linux")
+                self.f_platform.setText(f"Windows (runs through {COMPAT_LAYER})")
+        self.form.setRowVisible(self.f_platform, HAS_WINDOWS_LAYER)
         self.f_location.setText(path or "—")
         self.f_played.setText(format_playtime(secs))
         self.f_last.setText(format_when(last) if last else "Never")
@@ -2118,13 +2319,14 @@ class MainWindow(QMainWindow):
                 return
         else:
             source = OS
-            if OS == "Linux":
-                if "Linux" in game.sources and "Windows" in game.sources:
+            if HAS_WINDOWS_LAYER:
+                if OS in game.sources and "Windows" in game.sources:
                     box = QMessageBox(self)
                     box.setWindowTitle("Which version?")
-                    box.setText("This game has a Linux and a Windows version. Which would you like to install?")
-                    native = box.addButton("Native Linux (recommended)", QMessageBox.ButtonRole.AcceptRole)
-                    win = box.addButton("Windows (needs Proton)", QMessageBox.ButtonRole.AcceptRole)
+                    box.setText(f"This game has a {NATIVE_NAME} and a Windows version. "
+                                "Which would you like to install?")
+                    native = box.addButton(f"Native {NATIVE_NAME} (recommended)", QMessageBox.ButtonRole.AcceptRole)
+                    win = box.addButton(f"Windows (needs {COMPAT_LAYER})", QMessageBox.ButtonRole.AcceptRole)
                     box.addButton(QMessageBox.StandardButton.Cancel)
                     box.exec()
                     clicked = box.clickedButton()
@@ -2135,9 +2337,10 @@ class MainWindow(QMainWindow):
                 elif "Windows" in game.sources:
                     source = "Windows"
 
-            dest = GAMES_FOLDER
+            # macOS keeps native .app games in /Applications; Windows builds go beside Bandit's data
+            dest = base_dest = WIN_GAMES_FOLDER if (OS == "Darwin" and source == "Windows") else GAMES_FOLDER
             if self.settings.get("Ask where to install games to", False):
-                dest = QFileDialog.getExistingDirectory(self, "Choose install folder", GAMES_FOLDER)
+                dest = QFileDialog.getExistingDirectory(self, "Choose install folder", base_dest)
                 if not dest:
                     return
             os.makedirs(dest, exist_ok=True)
@@ -2293,9 +2496,21 @@ class MainWindow(QMainWindow):
                 return
             proc = None
             self.proc_mac_app = None
+            self.proc_cx = None
             workdir = os.path.dirname(game_path)
 
-            if OS == "Darwin":
+            if OS == "Darwin" and section == "Windows":
+                cx = self._ensure_crossover(then=lambda: self.play(game))
+                if cx is None:
+                    return
+                write_account_name_files(self.settings.account_name)  # the prefix may be new
+                env = crossover_env(cx)
+                log_path = os.path.join(USER_DATA, "crossover.log")
+                with open(log_path, "w") as log:
+                    proc = subprocess.Popen([cx.loader] + wine_target(game_path) + args, cwd=workdir, env=env,
+                                            stdout=log, stderr=subprocess.STDOUT)
+                self.proc_cx = (cx, env)
+            elif OS == "Darwin":
                 if game_path.endswith(".app"):
                     cmd = ["open", "-W", game_path] + (["--args"] + args if args else [])
                     proc = subprocess.Popen(cmd, cwd=workdir)
@@ -2375,6 +2590,106 @@ class MainWindow(QMainWindow):
         self._start_download(w, ("proton", None))
         return None
 
+    # ---- CrossOver setup (macOS twin of _ensure_proton) ---------------- #
+
+    def _ensure_crossover(self, then) -> CrossOver | None:
+        """Return a ready-to-use CrossOver, or None after starting whatever it still needs
+        (locating it, installing Rosetta, creating the prefix) and arranging for then() to run."""
+        if self.active:
+            QMessageBox.information(self, "Task in progress",
+                                    "Please wait for the current task to finish before launching a Windows game.")
+            return None
+        cx = find_crossover(self.settings.get("CrossOver path", ""))
+        if cx is None:
+            self._offer_crossover(then)
+            return None
+        if not cx.arm64 and is_apple_silicon() and not rosetta_installed():
+            self._install_rosetta(then)
+            return None
+        if not prefix_ready():
+            self._create_prefix(cx, then)
+            return None
+        return cx
+
+    def _offer_crossover(self, then) -> None:
+        box = QMessageBox(self)
+        box.setWindowTitle("CrossOver required")
+        box.setText("Windows games run on your Mac through CrossOver, which Bandit can't download for you. "
+                    "CrossOver is made by CodeWeavers (paid, with a free trial).\n\n"
+                    "Install it and try again, or point Bandit at your copy.")
+        get = box.addButton("Get CrossOver…", QMessageBox.ButtonRole.AcceptRole)
+        loc = box.addButton("Locate CrossOver…", QMessageBox.ButtonRole.AcceptRole)
+        box.addButton(QMessageBox.StandardButton.Cancel)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked is get:
+            webbrowser.open(CROSSOVER_DOWNLOAD_PAGE, new=2)
+        elif clicked is loc and self.locate_crossover():
+            then()
+
+    def locate_crossover(self) -> bool:
+        path, _ = QFileDialog.getOpenFileName(self, "Select CrossOver", "/Applications", "Applications (*.app)")
+        if not path:
+            return False
+        if crossover_from_app(path) is None:
+            QMessageBox.warning(self, "Locate CrossOver",
+                                "That doesn't look like a CrossOver installation Bandit can use.")
+            return False
+        self.settings.set("CrossOver path", path)
+        self.set_status(f"Using {os.path.basename(path)}.")
+        return True
+
+    def _run_setup(self, kind: str, title: str, name: str, fn, on_ok, fail_title: str) -> None:
+        """Run a long setup step off the UI thread with the centered busy panel (like a download)."""
+        self.active = (kind, None)
+        self.set_status("")
+        self.dl_busy(title, name)
+        self.update_rows()
+
+        def done(_res, err) -> None:
+            self.active = None
+            self.dl_hide()
+            if err:
+                self.set_status("")
+                QMessageBox.warning(self, fail_title, str(err))
+            else:
+                on_ok()
+            self.update_rows()
+            self._pump()
+
+        self.run_task(fn, done)
+
+    def _install_rosetta(self, then) -> None:
+        if QMessageBox.question(
+            self, "Install Rosetta?",
+            "CrossOver needs Apple's Rosetta 2 on this Mac. Install it now? (You'll be asked for your password.)",
+        ) != QMessageBox.StandardButton.Yes:
+            return
+
+        def work() -> None:
+            r = subprocess.run(
+                ["osascript", "-e", 'do shell script "/usr/sbin/softwareupdate --install-rosetta '
+                                    '--agree-to-license" with administrator privileges'],
+                capture_output=True, text=True, timeout=900)
+            if r.returncode != 0:
+                raise RuntimeError(r.stderr.strip() or "The Rosetta installation didn't complete.")
+
+        def ok() -> None:
+            self.set_status("Rosetta installed.")
+            then()
+
+        self._run_setup("rosetta", "Installing", "Rosetta 2", work, ok, "Rosetta")
+
+    def _create_prefix(self, cx: CrossOver, then) -> None:
+        def ok() -> None:
+            write_account_name_files(self.settings.account_name)
+            send_telemetry(self.settings, "crossover_prefix_created")
+            self.set_status("Windows environment ready.")
+            then()
+
+        self._run_setup("prefix", "Setting up CrossOver", "first launch only",
+                        lambda: create_prefix(cx), ok, "CrossOver")
+
     # ---- running game ------------------------------------------------- #
 
     def _game_finished(self) -> None:
@@ -2385,6 +2700,7 @@ class MainWindow(QMainWindow):
                 self.meta.playtime[game.id] = self.meta.playtime.get(game.id, 0) + elapsed
                 self.meta.save()
         self.proc, self.proc_game, self.proc_mac_app, self.proc_started = None, None, None, 0.0
+        self.proc_cx = None
         send_telemetry(self.settings, "game_exited", game)
 
     def quit_game(self) -> None:
@@ -2397,6 +2713,12 @@ class MainWindow(QMainWindow):
         self.update_rows()
 
     def _terminate(self, proc: subprocess.Popen) -> None:
+        if self.proc_cx:  # take down everything running in the prefix, not just the loader
+            cx, env = self.proc_cx
+            try:
+                subprocess.run([cx.server, "-k"], env=env, capture_output=True, timeout=15)
+            except (OSError, subprocess.SubprocessError):
+                pass
         if OS == "Darwin" and self.proc_mac_app:
             path, name = self.proc_mac_app
             for cmd in (["osascript", "-e", f'tell application "{name}" to quit'], ["pkill", "-f", path]):
@@ -2622,7 +2944,16 @@ class MainWindow(QMainWindow):
         if icon_rel:
             icon = os.path.join(install_path, icon_rel.lstrip("/"))
         try:
-            create_desktop_shortcut(game.name, exe, icon, via_proton=(OS == "Linux" and section == "Windows"))
+            if OS == "Darwin" and section == "Windows":
+                cx = find_crossover(self.settings.get("CrossOver path", ""))
+                if cx is None:
+                    QMessageBox.warning(self, "CrossOver not found",
+                                        "Bandit couldn't find CrossOver, which this game needs. "
+                                        "Use File ▸ Locate CrossOver… and try again.")
+                    return
+                create_crossover_shortcut(game.name, exe, icon, cx)
+            else:
+                create_desktop_shortcut(game.name, exe, icon, via_proton=(OS == "Linux" and section == "Windows"))
             QMessageBox.information(self, "Shortcut Created", f"Desktop shortcut created for {game.name}.")
         except Exception as e:  # noqa: BLE001
             QMessageBox.critical(self, "Error", f"Failed to create shortcut:\n{e}")
