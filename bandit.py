@@ -69,7 +69,7 @@ else:
     PROGRAM_DATA = "/etc/BanditGameLauncher"
 
 GAMES_FOLDER = "/Applications" if OS == "Darwin" else os.path.join(PROGRAM_DATA, "Games")
-WIN_GAMES_FOLDER = os.path.join(PROGRAM_DATA, "Games")  # where Windows builds install (Linux + macOS)
+WIN_GAMES_FOLDER = GAMES_FOLDER if OS == "Darwin" else os.path.join(PROGRAM_DATA, "Games")
 WINDOWS_SUBDIR = os.path.join(PROGRAM_DATA, "Windows")  # Linux + macOS: Windows-build manifests
 PFX_ROOT = os.path.join(HOME, ".banditpfx")  # Windows compatibility prefix: Proton (Linux) / CrossOver (macOS)
 WINE_PREFIX = os.path.join(PFX_ROOT, "pfx")
