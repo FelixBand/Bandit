@@ -395,7 +395,7 @@ META_PATH = os.path.join(USER_DATA, "library.json")
 
 
 class UserMeta:
-    """Per-user extras: favorites, playtime, last played, launch options."""
+    """Per-user extras: favorites, playtime, last played, and per-game launch settings."""
 
     def __init__(self) -> None:
         d = read_json(META_PATH, {})
@@ -403,6 +403,9 @@ class UserMeta:
         self.playtime: dict[str, int] = {k: int(v) for k, v in d.get("playtime", {}).items()}
         self.last_played: dict[str, int] = {k: int(v) for k, v in d.get("last_played", {}).items()}
         self.launch_args: dict[str, str] = dict(d.get("launch_args", {}))
+        self.graphics_backend: dict[str, str] = dict(d.get("graphics_backend", {}))
+        self.winemsync: dict[str, bool] = dict(d.get("winemsync", {}))
+        self.mtl_hud_enabled: dict[str, bool] = dict(d.get("mtl_hud_enabled", {}))
 
     def save(self) -> None:
         try:
@@ -411,6 +414,9 @@ class UserMeta:
                 "playtime": self.playtime,
                 "last_played": self.last_played,
                 "launch_args": self.launch_args,
+                "graphics_backend": self.graphics_backend,
+                "winemsync": self.winemsync,
+                "mtl_hud_enabled": self.mtl_hud_enabled,
             })
         except OSError as e:
             print(f"[WARNING] Could not save {META_PATH}: {e}")
@@ -766,7 +772,8 @@ def rosetta_installed() -> bool:
     return os.path.exists("/Library/Apple/usr/libexec/oah/libRosettaRuntime")
 
 
-def crossover_env(cx: CrossOver) -> dict:
+def crossover_env(cx: CrossOver, graphics_backend: str = "", winemsync: bool = True,
+                  mtl_hud_enabled: bool = False) -> dict:
     """Environment for running CrossOver's Wine straight against Bandit's own prefix."""
     env = os.environ.copy()
     win_dlls = os.path.join(cx.root, "lib", "wine", "x86_64-windows")
@@ -779,7 +786,11 @@ def crossover_env(cx: CrossOver) -> dict:
         "WINEDLLPATH": ":".join(p for p in (win_dlls, cx.unix_dir, env.get("WINEDLLPATH", "")) if p),
         "PATH": os.path.join(cx.root, "bin") + ":" + env.get("PATH", ""),
         "WINEDLLOVERRIDES": WINE_DLL_OVERRIDES,
+        "WINEMSYNC": "1" if winemsync else "0",
+        "MTL_HUD_ENABLED": "1" if mtl_hud_enabled else "0",
     })
+    if graphics_backend.strip():
+        env["CX_GRAPHICS_BACKEND"] = graphics_backend.strip()
     d3d = os.path.join(cx.root, "lib64", "apple_gptk", "external", "libd3dshared.dylib")
     if os.path.exists(d3d):
         env["CX_APPLEGPTK_LIBD3DSHARED_PATH"] = d3d
@@ -1459,6 +1470,7 @@ class MainWindow(QMainWindow):
         self.proc_game: Game | None = None
         self.proc_mac_app: tuple[str, str] | None = None
         self.proc_cx: tuple[CrossOver, dict] | None = None
+        self.proc_cx_waiting = False
         self.proc_started = 0.0
 
         self._build_actions()
@@ -1645,10 +1657,11 @@ class MainWindow(QMainWindow):
         form = QFormLayout()
         form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
         self.f_status, self.f_size, self.f_mp, self.f_platform = QLabel(), QLabel(), QLabel(), QLabel()
-        self.f_location, self.f_played, self.f_last, self.f_updated, self.f_args = (
-            QLabel(), QLabel(), QLabel(), QLabel(), QLabel())
+        self.f_location, self.f_played, self.f_last, self.f_updated, self.f_args, self.f_graphics = (
+            QLabel(), QLabel(), QLabel(), QLabel(), QLabel(), QLabel())
         for lbl in (self.f_status, self.f_size, self.f_mp, self.f_platform,
-                    self.f_location, self.f_played, self.f_last, self.f_updated, self.f_args):
+                    self.f_location, self.f_played, self.f_last, self.f_updated, self.f_args,
+                    self.f_graphics):
             lbl.setWordWrap(True)
             lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self.form = form
@@ -1656,7 +1669,8 @@ class MainWindow(QMainWindow):
                         ("Version:", self.f_platform), ("Location:", self.f_location),
                         ("Play time:", self.f_played), ("Last played:", self.f_last),
                         ("Last updated on Bandit:", self.f_updated),
-                        ("Launch options:", self.f_args)):
+                        ("Launch options:", self.f_args),
+                        ("CrossOver graphics backend:", self.f_graphics)):
             form.addRow(text, w)
         pl.addLayout(form)
         pl.addStretch(1)
@@ -2117,6 +2131,7 @@ class MainWindow(QMainWindow):
         secs = self.meta.playtime.get(game.id, 0)
         last = self.meta.last_played.get(game.id, 0)
         args = self.meta.launch_args.get(game.id, "")
+        graphics_backend = self.meta.graphics_backend.get(game.id, "")
 
         self.stack.setCurrentIndex(1)
         self.d_title.setText(game.name)
@@ -2135,6 +2150,7 @@ class MainWindow(QMainWindow):
         self.f_last.setText(format_when(last) if last else "Never")
         self.f_updated.setText(self._game_update_text(game))
         self.f_args.setText(args or "—")
+        self.f_graphics.setText(graphics_backend or "Default")
         self.form.setRowVisible(self.f_location, installed)
 
         text, enabled = {
@@ -2236,16 +2252,62 @@ class MainWindow(QMainWindow):
         game = self.selected_game()
         if not game:
             return
-        text, ok = QInputDialog.getText(
-            self, "Launch Options", f"Command-line arguments for {game.name}:",
-            QLineEdit.EchoMode.Normal, self.meta.launch_args.get(game.id, ""))
-        if not ok:
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"Launch Options — {game.name}")
+        args_edit = QLineEdit(self.meta.launch_args.get(game.id, ""))
+        backend_combo = QComboBox()
+        backend_combo.addItem("Default", "")
+        for backend_option in ("d3dmetal", "dxvk", "dxmt", "wined3d"):
+            backend_combo.addItem(backend_option, backend_option)
+        backend_combo.addItem("Other…", None)
+        backend_other = QLineEdit()
+        backend_other.setPlaceholderText("Enter a graphics backend")
+        saved_backend = self.meta.graphics_backend.get(game.id, "")
+        saved_index = backend_combo.findData(saved_backend)
+        if saved_index < 0:
+            saved_index = backend_combo.findData(None)
+            backend_other.setText(saved_backend)
+        backend_combo.setCurrentIndex(saved_index)
+        winemsync_check = QCheckBox("Enabled")
+        winemsync_check.setChecked(self.meta.winemsync.get(game.id, True))
+        mtl_hud_check = QCheckBox("Enabled")
+        mtl_hud_check.setChecked(self.meta.mtl_hud_enabled.get(game.id, False))
+        form = QFormLayout()
+        form.addRow("Command-line arguments:", args_edit)
+        form.addRow("CrossOver graphics backend:", backend_combo)
+        form.addRow("", backend_other)
+        form.addRow("MSync:", winemsync_check)
+        form.addRow("Metal HUD (Peformance overlay):", mtl_hud_check)
+        form.setRowVisible(backend_other, backend_combo.currentData() is None)
+        backend_combo.currentIndexChanged.connect(
+            lambda _index: form.setRowVisible(backend_other, backend_combo.currentData() is None))
+        note = QLabel("The graphics backend applies to Windows games launched through CrossOver on macOS.")
+        note.setWordWrap(True)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout = QVBoxLayout(dialog)
+        layout.addLayout(form)
+        layout.addWidget(note)
+        layout.addWidget(buttons)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
             return
-        text = text.strip()
-        if text:
-            self.meta.launch_args[game.id] = text
+        args = args_edit.text().strip()
+        backend_option = backend_combo.currentData()
+        backend = backend_other.text().strip() if backend_option is None else backend_option
+        winemsync = winemsync_check.isChecked()
+        mtl_hud_enabled = mtl_hud_check.isChecked()
+        if args:
+            self.meta.launch_args[game.id] = args
         else:
             self.meta.launch_args.pop(game.id, None)
+        if backend:
+            self.meta.graphics_backend[game.id] = backend
+        else:
+            self.meta.graphics_backend.pop(game.id, None)
+        self.meta.winemsync[game.id] = winemsync
+        self.meta.mtl_hud_enabled[game.id] = mtl_hud_enabled
         self.meta.save()
         self.refresh_selection()
 
@@ -2497,6 +2559,7 @@ class MainWindow(QMainWindow):
             proc = None
             self.proc_mac_app = None
             self.proc_cx = None
+            self.proc_cx_waiting = False
             workdir = os.path.dirname(game_path)
 
             if OS == "Darwin" and section == "Windows":
@@ -2504,7 +2567,12 @@ class MainWindow(QMainWindow):
                 if cx is None:
                     return
                 write_account_name_files(self.settings.account_name)  # the prefix may be new
-                env = crossover_env(cx)
+                env = crossover_env(
+                    cx,
+                    self.meta.graphics_backend.get(game.id, ""),
+                    self.meta.winemsync.get(game.id, True),
+                    self.meta.mtl_hud_enabled.get(game.id, False),
+                )
                 log_path = os.path.join(USER_DATA, "crossover.log")
                 with open(log_path, "w") as log:
                     proc = subprocess.Popen([cx.loader] + wine_target(game_path) + args, cwd=workdir, env=env,
@@ -2701,6 +2769,7 @@ class MainWindow(QMainWindow):
                 self.meta.save()
         self.proc, self.proc_game, self.proc_mac_app, self.proc_started = None, None, None, 0.0
         self.proc_cx = None
+        self.proc_cx_waiting = False
         send_telemetry(self.settings, "game_exited", game)
 
     def quit_game(self) -> None:
@@ -2745,6 +2814,18 @@ class MainWindow(QMainWindow):
 
     def _poll_process(self) -> None:
         if self.proc is not None and self.proc.poll() is not None:
+            if self.proc_cx and not self.proc_cx_waiting:
+                # Wait until launch has completed before watching wineserver, avoiding a startup race.
+                cx, env = self.proc_cx
+                try:
+                    self.proc = subprocess.Popen([cx.server, "-w"], env=env,
+                                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    self.proc_cx_waiting = True
+                    return
+                except OSError as e:
+                    QMessageBox.warning(self, "Game tracking",
+                                        f"The game launched, but Bandit couldn't track it reliably:\n{e}")
+                    self.proc_cx = None
             name = self.proc_game.name if self.proc_game else "Game"
             self._game_finished()
             self.set_status(f"{name} exited.")
