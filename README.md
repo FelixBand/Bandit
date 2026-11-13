@@ -2,6 +2,10 @@
 
 With this app, you can download and play games hosted on my dedicated file server.
 
+Per-game options are available from **Launch Options…**. CrossOver graphics, MSync, and Metal HUD
+options are shown on macOS. On Linux, enable **Use WineD3D** to set `PROTON_USE_WINED3D=1` for
+compatibility with older graphics cards; it is off by default.
+
 # Compiling
 
 To compile the app I use PyInstaller.

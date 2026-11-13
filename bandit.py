@@ -406,6 +406,7 @@ class UserMeta:
         self.graphics_backend: dict[str, str] = dict(d.get("graphics_backend", {}))
         self.winemsync: dict[str, bool] = dict(d.get("winemsync", {}))
         self.mtl_hud_enabled: dict[str, bool] = dict(d.get("mtl_hud_enabled", {}))
+        self.proton_use_wined3d: dict[str, bool] = dict(d.get("proton_use_wined3d", {}))
 
     def save(self) -> None:
         try:
@@ -417,6 +418,7 @@ class UserMeta:
                 "graphics_backend": self.graphics_backend,
                 "winemsync": self.winemsync,
                 "mtl_hud_enabled": self.mtl_hud_enabled,
+                "proton_use_wined3d": self.proton_use_wined3d,
             })
         except OSError as e:
             print(f"[WARNING] Could not save {META_PATH}: {e}")
@@ -691,11 +693,14 @@ def find_proton_binary() -> str | None:
     return None
 
 
-def proton_env() -> dict:
+def proton_env(use_wined3d: bool = False) -> dict:
     env = os.environ.copy()
     env["STEAM_COMPAT_DATA_PATH"] = PFX_ROOT
     env["STEAM_COMPAT_CLIENT_INSTALL_PATH"] = PFX_ROOT
     env["WINEDLLOVERRIDES"] = "dinput8,winhttp,winmm=n,b"
+    env.pop("PROTON_USE_WINED3D", None)
+    if use_wined3d:
+        env["PROTON_USE_WINED3D"] = "1"
     return env
 
 
@@ -2152,6 +2157,7 @@ class MainWindow(QMainWindow):
         self.f_args.setText(args or "—")
         self.f_graphics.setText(graphics_backend or "Default")
         self.form.setRowVisible(self.f_location, installed)
+        self.form.setRowVisible(self.f_graphics, OS == "Darwin")
 
         text, enabled = {
             "downloading": ("Cancel Download", True),
@@ -2255,59 +2261,70 @@ class MainWindow(QMainWindow):
         dialog = QDialog(self)
         dialog.setWindowTitle(f"Launch Options — {game.name}")
         args_edit = QLineEdit(self.meta.launch_args.get(game.id, ""))
-        backend_combo = QComboBox()
-        backend_combo.addItem("Default", "")
-        for backend_option in ("d3dmetal", "dxvk", "dxmt", "wined3d"):
-            backend_combo.addItem(backend_option, backend_option)
-        backend_combo.addItem("Other…", None)
-        backend_other = QLineEdit()
-        backend_other.setPlaceholderText("Enter a graphics backend")
-        saved_backend = self.meta.graphics_backend.get(game.id, "")
-        saved_index = backend_combo.findData(saved_backend)
-        if saved_index < 0:
-            saved_index = backend_combo.findData(None)
-            backend_other.setText(saved_backend)
-        backend_combo.setCurrentIndex(saved_index)
-        winemsync_check = QCheckBox("Enabled")
-        winemsync_check.setChecked(self.meta.winemsync.get(game.id, True))
-        mtl_hud_check = QCheckBox("Enabled")
-        mtl_hud_check.setChecked(self.meta.mtl_hud_enabled.get(game.id, False))
         form = QFormLayout()
         form.addRow("Command-line arguments:", args_edit)
-        form.addRow("CrossOver graphics backend:", backend_combo)
-        form.addRow("", backend_other)
-        form.addRow("MSync:", winemsync_check)
-        form.addRow("Metal HUD (Peformance overlay):", mtl_hud_check)
-        form.setRowVisible(backend_other, backend_combo.currentData() is None)
-        backend_combo.currentIndexChanged.connect(
-            lambda _index: form.setRowVisible(backend_other, backend_combo.currentData() is None))
-        note = QLabel("The graphics backend applies to Windows games launched through CrossOver on macOS.")
-        note.setWordWrap(True)
+        if OS == "Darwin":
+            backend_combo = QComboBox()
+            backend_combo.addItem("Default", "")
+            for backend_option in ("d3dmetal", "dxvk", "dxmt", "wined3d"):
+                backend_combo.addItem(backend_option, backend_option)
+            backend_combo.addItem("Other…", None)
+            backend_other = QLineEdit()
+            backend_other.setPlaceholderText("Enter a graphics backend")
+            saved_backend = self.meta.graphics_backend.get(game.id, "")
+            saved_index = backend_combo.findData(saved_backend)
+            if saved_index < 0:
+                saved_index = backend_combo.findData(None)
+                backend_other.setText(saved_backend)
+            backend_combo.setCurrentIndex(saved_index)
+            winemsync_check = QCheckBox("Enabled")
+            winemsync_check.setChecked(self.meta.winemsync.get(game.id, True))
+            mtl_hud_check = QCheckBox("Enabled")
+            mtl_hud_check.setChecked(self.meta.mtl_hud_enabled.get(game.id, False))
+            form.addRow("CrossOver graphics backend:", backend_combo)
+            form.addRow("", backend_other)
+            form.addRow("MSync:", winemsync_check)
+            form.addRow("Metal HUD (Peformance overlay):", mtl_hud_check)
+            form.setRowVisible(backend_other, backend_combo.currentData() is None)
+            backend_combo.currentIndexChanged.connect(
+                lambda _index: form.setRowVisible(backend_other, backend_combo.currentData() is None))
+            note = QLabel("These options apply to Windows games launched through CrossOver on macOS.")
+        elif OS == "Linux":
+            proton_wined3d_check = QCheckBox("Enabled")
+            proton_wined3d_check.setChecked(self.meta.proton_use_wined3d.get(game.id, False))
+            form.addRow("Use WineD3D (PROTON_USE_WINED3D):", proton_wined3d_check)
+            note = QLabel("Use WineD3D instead of DXVK for compatibility with older graphics cards.")
+        else:
+            note = None
+        if note:
+            note.setWordWrap(True)
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
         buttons.accepted.connect(dialog.accept)
         buttons.rejected.connect(dialog.reject)
         layout = QVBoxLayout(dialog)
         layout.addLayout(form)
-        layout.addWidget(note)
+        if note:
+            layout.addWidget(note)
         layout.addWidget(buttons)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         args = args_edit.text().strip()
-        backend_option = backend_combo.currentData()
-        backend = backend_other.text().strip() if backend_option is None else backend_option
-        winemsync = winemsync_check.isChecked()
-        mtl_hud_enabled = mtl_hud_check.isChecked()
         if args:
             self.meta.launch_args[game.id] = args
         else:
             self.meta.launch_args.pop(game.id, None)
-        if backend:
-            self.meta.graphics_backend[game.id] = backend
-        else:
-            self.meta.graphics_backend.pop(game.id, None)
-        self.meta.winemsync[game.id] = winemsync
-        self.meta.mtl_hud_enabled[game.id] = mtl_hud_enabled
+        if OS == "Darwin":
+            backend_option = backend_combo.currentData()
+            backend = backend_other.text().strip() if backend_option is None else backend_option
+            if backend:
+                self.meta.graphics_backend[game.id] = backend
+            else:
+                self.meta.graphics_backend.pop(game.id, None)
+            self.meta.winemsync[game.id] = winemsync_check.isChecked()
+            self.meta.mtl_hud_enabled[game.id] = mtl_hud_check.isChecked()
+        elif OS == "Linux":
+            self.meta.proton_use_wined3d[game.id] = proton_wined3d_check.isChecked()
         self.meta.save()
         self.refresh_selection()
 
@@ -2596,7 +2613,9 @@ class MainWindow(QMainWindow):
                     cmd = [proton, "run", "wscript.exe", game_path] + args
                 else:
                     cmd = [proton, "run", game_path] + args
-                proc = subprocess.Popen(cmd, cwd=workdir, env=proton_env())
+                proc = subprocess.Popen(
+                    cmd, cwd=workdir,
+                    env=proton_env(self.meta.proton_use_wined3d.get(game.id, False)))
             else:
                 if OS == "Linux" and not os.access(game_path, os.X_OK):
                     try:
