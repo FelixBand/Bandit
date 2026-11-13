@@ -2292,8 +2292,8 @@ class MainWindow(QMainWindow):
         elif OS == "Linux":
             proton_wined3d_check = QCheckBox("Enabled")
             proton_wined3d_check.setChecked(self.meta.proton_use_wined3d.get(game.id, False))
-            form.addRow("Use WineD3D (PROTON_USE_WINED3D):", proton_wined3d_check)
-            note = QLabel("Use WineD3D instead of DXVK for compatibility with older graphics cards.")
+            form.addRow("Use WineD3D:", proton_wined3d_check)
+            note = QLabel("Use WineD3D if you're using an older graphics card that doesn't support DXVK/vkd3d.")
         else:
             note = None
         if note:
