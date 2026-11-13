@@ -10,6 +10,7 @@ import plistlib
 import random
 import re
 import shlex
+import signal
 import shutil
 import subprocess
 import sys
@@ -407,6 +408,7 @@ class UserMeta:
         self.winemsync: dict[str, bool] = dict(d.get("winemsync", {}))
         self.mtl_hud_enabled: dict[str, bool] = dict(d.get("mtl_hud_enabled", {}))
         self.proton_use_wined3d: dict[str, bool] = dict(d.get("proton_use_wined3d", {}))
+        self.native_steam: dict[str, bool] = dict(d.get("native_steam", {}))
 
     def save(self) -> None:
         try:
@@ -419,6 +421,7 @@ class UserMeta:
                 "winemsync": self.winemsync,
                 "mtl_hud_enabled": self.mtl_hud_enabled,
                 "proton_use_wined3d": self.proton_use_wined3d,
+                "native_steam": self.native_steam,
             })
         except OSError as e:
             print(f"[WARNING] Could not save {META_PATH}: {e}")
@@ -801,6 +804,46 @@ def crossover_env(cx: CrossOver, graphics_backend: str = "", winemsync: bool = T
         env["CX_APPLEGPTK_LIBD3DSHARED_PATH"] = d3d
     env.setdefault("ROSETTA_ADVERTISE_AVX", "1")   # many modern games refuse to start without AVX
     env.setdefault("WINEDEBUG", "fixme-all")       # keep the log readable
+    return env
+
+
+def find_notproton_tool() -> str | None:
+    """Find an installed NotProton compatibility tool for the native macOS Steam client."""
+    tools = os.path.join(HOME, "Library", "Application Support", "Steam", "compatibilitytools.d")
+    for folder in sorted(glob.glob(os.path.join(tools, "notproton*")), reverse=True):
+        run = os.path.join(folder, "run")
+        if os.path.isfile(run) and os.access(run, os.X_OK):
+            return run
+    return None
+
+
+def find_native_steam() -> tuple[str, str] | None:
+    """Return the Steam.app bundle and its inner client directory, if installed."""
+    support_steam = os.path.join(HOME, "Library", "Application Support", "Steam", "Steam.AppBundle", "Steam")
+    candidates = (
+        ("/Applications/Steam.app", os.path.join("/Applications/Steam.app", "Contents", "MacOS")),
+        (os.path.join(HOME, "Applications", "Steam.app"),
+         os.path.join(HOME, "Applications", "Steam.app", "Contents", "MacOS")),
+        (support_steam, os.path.join(support_steam, "Contents", "MacOS")),
+    )
+    for app, client in candidates:
+        if os.path.isfile(os.path.join(client, "steam_osx")):
+            return app, client
+    return None
+
+
+def notproton_env(game_path: str, appid: str, tool: str, client: str) -> dict:
+    """Steam-compatible launch environment for NotProton's native client bridge."""
+    env = os.environ.copy()
+    env.update({
+        "STEAM_COMPAT_DATA_PATH": PFX_ROOT,
+        "STEAM_COMPAT_CLIENT_INSTALL_PATH": client,
+        "STEAM_COMPAT_TOOL_PATHS": os.path.dirname(tool),
+        "STEAM_COMPAT_INSTALL_PATH": os.path.dirname(game_path),
+        "STEAM_COMPAT_APP_ID": appid,
+        "SteamAppId": appid,
+        "SteamGameId": appid,
+    })
     return env
 
 
@@ -1476,6 +1519,7 @@ class MainWindow(QMainWindow):
         self.proc_mac_app: tuple[str, str] | None = None
         self.proc_cx: tuple[CrossOver, dict] | None = None
         self.proc_cx_waiting = False
+        self.proc_new_session = False
         self.proc_started = 0.0
 
         self._build_actions()
@@ -2288,7 +2332,18 @@ class MainWindow(QMainWindow):
             form.setRowVisible(backend_other, backend_combo.currentData() is None)
             backend_combo.currentIndexChanged.connect(
                 lambda _index: form.setRowVisible(backend_other, backend_combo.currentData() is None))
-            note = QLabel("These options apply to Windows games launched through CrossOver on macOS.")
+            if game.steam_appid:
+                native_steam_check = QCheckBox("Enabled")
+                native_steam_check.setChecked(self.meta.native_steam.get(game.id, False))
+                form.addRow("Use native Steam via NotProton:", native_steam_check)
+                note = QLabel(
+                    "Requires NotProton installed in native Steam, Steam signed in, and a Steam App ID. "
+                    "This uses NotProton's Steam API bridge instead of Bandit's direct CrossOver launch; "
+                    "the CrossOver options above do not apply in this mode."
+                )
+            else:
+                native_steam_check = None
+                note = QLabel("These options apply to Windows games launched through CrossOver on macOS.")
         elif OS == "Linux":
             proton_wined3d_check = QCheckBox("Enabled")
             proton_wined3d_check.setChecked(self.meta.proton_use_wined3d.get(game.id, False))
@@ -2323,6 +2378,8 @@ class MainWindow(QMainWindow):
                 self.meta.graphics_backend.pop(game.id, None)
             self.meta.winemsync[game.id] = winemsync_check.isChecked()
             self.meta.mtl_hud_enabled[game.id] = mtl_hud_check.isChecked()
+            if native_steam_check:
+                self.meta.native_steam[game.id] = native_steam_check.isChecked()
         elif OS == "Linux":
             self.meta.proton_use_wined3d[game.id] = proton_wined3d_check.isChecked()
         self.meta.save()
@@ -2577,24 +2634,48 @@ class MainWindow(QMainWindow):
             self.proc_mac_app = None
             self.proc_cx = None
             self.proc_cx_waiting = False
+            self.proc_new_session = False
             workdir = os.path.dirname(game_path)
 
             if OS == "Darwin" and section == "Windows":
-                cx = self._ensure_crossover(then=lambda: self.play(game))
-                if cx is None:
-                    return
-                write_account_name_files(self.settings.account_name)  # the prefix may be new
-                env = crossover_env(
-                    cx,
-                    self.meta.graphics_backend.get(game.id, ""),
-                    self.meta.winemsync.get(game.id, True),
-                    self.meta.mtl_hud_enabled.get(game.id, False),
-                )
-                log_path = os.path.join(USER_DATA, "crossover.log")
-                with open(log_path, "w") as log:
-                    proc = subprocess.Popen([cx.loader] + wine_target(game_path) + args, cwd=workdir, env=env,
-                                            stdout=log, stderr=subprocess.STDOUT)
-                self.proc_cx = (cx, env)
+                if self.meta.native_steam.get(game.id, False) and game.steam_appid:
+                    tool = find_notproton_tool()
+                    steam = find_native_steam()
+                    if not tool:
+                        QMessageBox.warning(
+                            self, "Native Steam unavailable",
+                            "Install NotProton in the native macOS Steam client before enabling this option.")
+                        return
+                    if not steam:
+                        QMessageBox.warning(
+                            self, "Native Steam unavailable",
+                            "Bandit couldn't find the native Steam client. Install or open Steam before retrying.")
+                        return
+                    steam_app, steam_client = steam
+                    subprocess.run(["open", "-a", steam_app], check=True, timeout=30)
+                    env = notproton_env(game_path, game.steam_appid, tool, steam_client)
+                    log_path = os.path.join(USER_DATA, "notproton-game.log")
+                    with open(log_path, "w") as log:
+                        proc = subprocess.Popen(
+                            [tool, "waitforexitandrun", game_path] + args, cwd=workdir, env=env,
+                            stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+                    self.proc_new_session = True
+                else:
+                    cx = self._ensure_crossover(then=lambda: self.play(game))
+                    if cx is None:
+                        return
+                    write_account_name_files(self.settings.account_name)  # the prefix may be new
+                    env = crossover_env(
+                        cx,
+                        self.meta.graphics_backend.get(game.id, ""),
+                        self.meta.winemsync.get(game.id, True),
+                        self.meta.mtl_hud_enabled.get(game.id, False),
+                    )
+                    log_path = os.path.join(USER_DATA, "crossover.log")
+                    with open(log_path, "w") as log:
+                        proc = subprocess.Popen([cx.loader] + wine_target(game_path) + args, cwd=workdir, env=env,
+                                                stdout=log, stderr=subprocess.STDOUT)
+                    self.proc_cx = (cx, env)
             elif OS == "Darwin":
                 if game_path.endswith(".app"):
                     cmd = ["open", "-W", game_path] + (["--args"] + args if args else [])
@@ -2789,6 +2870,7 @@ class MainWindow(QMainWindow):
         self.proc, self.proc_game, self.proc_mac_app, self.proc_started = None, None, None, 0.0
         self.proc_cx = None
         self.proc_cx_waiting = False
+        self.proc_new_session = False
         send_telemetry(self.settings, "game_exited", game)
 
     def quit_game(self) -> None:
@@ -2801,6 +2883,16 @@ class MainWindow(QMainWindow):
         self.update_rows()
 
     def _terminate(self, proc: subprocess.Popen) -> None:
+        if self.proc_new_session:
+            try:
+                os.killpg(proc.pid, signal.SIGTERM)
+                proc.wait(timeout=5)
+            except ProcessLookupError:
+                return
+            except subprocess.TimeoutExpired:
+                os.killpg(proc.pid, signal.SIGKILL)
+                proc.wait(timeout=5)
+            return
         if self.proc_cx:  # take down everything running in the prefix, not just the loader
             cx, env = self.proc_cx
             try:
