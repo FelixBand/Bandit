@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+import filecmp
 import glob
 import json
 import os
@@ -11,6 +12,7 @@ import random
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import tarfile
@@ -197,6 +199,7 @@ class Settings:
         "Check for updates on startup": True,
         "UI scale": 125,
         "CrossOver path": "",
+        "Connect to Steam": True,
         "Account name": "",
         "_first_launch": True,
     }
@@ -407,6 +410,7 @@ class UserMeta:
         self.winemsync: dict[str, bool] = dict(d.get("winemsync", {}))
         self.mtl_hud_enabled: dict[str, bool] = dict(d.get("mtl_hud_enabled", {}))
         self.proton_use_wined3d: dict[str, bool] = dict(d.get("proton_use_wined3d", {}))
+        self.steam_handoff: dict[str, bool] = dict(d.get("steam_handoff", {}))
 
     def save(self) -> None:
         try:
@@ -419,6 +423,7 @@ class UserMeta:
                 "winemsync": self.winemsync,
                 "mtl_hud_enabled": self.mtl_hud_enabled,
                 "proton_use_wined3d": self.proton_use_wined3d,
+                "steam_handoff": self.steam_handoff,
             })
         except OSError as e:
             print(f"[WARNING] Could not save {META_PATH}: {e}")
@@ -714,11 +719,15 @@ class CrossOver:
     server: str     # the matching wineserver
     unix_dir: str   # .../lib/wine/<arch>-unix
     arm64: bool     # True: native arm64 Wine (FEX build); False: x86_64 Wine under Rosetta 2
+    bridge: str = ""  # NotProton's Steam bridge folder when this is its patched runner (games can then reach Steam)
 
 
 def crossover_from_app(app: str) -> CrossOver | None:
     """Validate a CrossOver.app and locate its Wine loader + wineserver (None if it isn't usable)."""
-    root = os.path.join(app, "Contents", "SharedSupport", "CrossOver")
+    return crossover_from_root(app, os.path.join(app, "Contents", "SharedSupport", "CrossOver"))
+
+
+def crossover_from_root(app: str, root: str) -> CrossOver | None:
     if not os.path.isdir(os.path.join(root, "lib", "wine")):
         return None
 
@@ -737,8 +746,88 @@ def crossover_from_app(app: str) -> CrossOver | None:
     return None
 
 
-def find_crossover(custom: str = "") -> CrossOver | None:
-    """The user's chosen CrossOver.app first, then the usual places, then Spotlight."""
+# ---- Steam bridge (macOS): what Proton's steam.exe + lsteamclient do on Linux ---------------------
+# Valve's Proton runs a game through a small steam.exe whose lsteamclient bridge lets the Windows
+# process talk to the *native* Steam client, so no Windows Steam is needed. NotProton ports that to
+# macOS: a patched copy of CrossOver (its ntdll loads lsteamclient) plus a "bridge" folder holding
+# steam.exe, lsteamclient and the steamclient stubs. Those binaries can't be built here, so Bandit
+# reuses the ones NotProton has already installed and drives them the way NotProton's own launcher does.
+
+NOTPROTON_SUPPORT = os.path.join(HOME, "Library", "Application Support", "notproton")
+STEAM_SHIM = "C:\\Program Files (x86)\\Steam\\steam.exe"
+STEAM_APP_ID = "480"   # Spacewar: an app every Steam account owns, which these builds run as
+BRIDGE_FILES = ("steamclient64.dll", "steamclient.dll", "tier0_s64.dll", "vstdlib_s64.dll",
+                "lsteamclient.dll", "steam.exe")
+
+
+def prefix_steam_dir() -> str:
+    return os.path.join(WINE_PREFIX, "drive_c", "Program Files (x86)", "Steam")
+
+
+def bridge_dir_ok(bridge: str, unix_arch: str) -> bool:
+    return all(os.path.isfile(os.path.join(bridge, f)) for f in BRIDGE_FILES) and \
+        os.path.isfile(os.path.join(bridge, unix_arch, "lsteamclient.so"))
+
+
+def notproton_runner() -> CrossOver | None:
+    """NotProton's patched CrossOver (newest first) when its Steam bridge is installed and complete."""
+    bridge = os.path.join(NOTPROTON_SUPPORT, "bridge")
+    roots = sorted(glob.glob(os.path.join(NOTPROTON_SUPPORT, "runners", "crossover-*", "CrossOver")),
+                   key=lambda p: os.path.getmtime(p), reverse=True)
+    for root in roots:
+        cx = crossover_from_root(os.path.dirname(root), root)
+        if cx is None:
+            continue
+        patched = os.path.isfile(os.path.join(root, "lib", "wine", "x86_64-windows", "lsteamclient.dll"))
+        if patched and bridge_dir_ok(bridge, os.path.basename(cx.unix_dir)):
+            cx.bridge = bridge
+            return cx
+    return None
+
+
+def stage_steam_bridge(cx: CrossOver) -> None:
+    """Copy the bridge into Bandit's prefix the way NotProton does. Raises OSError on failure."""
+    if not cx.bridge:
+        return
+    dst = prefix_steam_dir()
+    os.makedirs(dst, exist_ok=True)
+    unix_arch = os.path.basename(cx.unix_dir)
+    wanted = {f: os.path.join(cx.bridge, f) for f in BRIDGE_FILES}
+    wanted["lsteamclient.so"] = os.path.join(cx.bridge, unix_arch, "lsteamclient.so")
+    syswow = os.path.join(WINE_PREFIX, "drive_c", "windows", "syswow64")
+    extra = {}
+    if os.path.isdir(syswow):  # the 32-bit lsteamclient trigger, and the legacy Steam.dll
+        extra[os.path.join(syswow, "lsteamclient.dll")] = os.path.join(cx.bridge, "i386-windows", "lsteamclient.dll")
+        extra[os.path.join(syswow, "Steam.dll")] = os.path.join(cx.bridge, "legacycompat", "Steam.dll")
+    pairs = [(s, os.path.join(dst, f)) for f, s in wanted.items()] + [(s, d) for d, s in extra.items()]
+    for s, d in pairs:
+        if not os.path.isfile(s):
+            continue
+        try:
+            if os.path.isfile(d) and filecmp.cmp(s, d, shallow=False):
+                continue
+        except OSError:
+            pass
+        shutil.copy2(s, d)
+    for name in os.listdir(dst):  # drop stale files, as NotProton does
+        if name.lower().endswith((".dll", ".so", ".exe")) and name not in wanted:
+            try:
+                os.remove(os.path.join(dst, name))
+            except OSError:
+                pass
+
+
+def native_steam_client_path() -> str:
+    return os.path.join(STEAM_ROOT, "Steam.AppBundle", "Steam", "Contents", "MacOS")
+
+
+def find_crossover(custom: str = "", steam_bridge: bool = False) -> CrossOver | None:
+    """NotProton's runner when games should reach Steam, else the user's chosen CrossOver.app,
+    then the usual places, then Spotlight."""
+    if steam_bridge:
+        runner = notproton_runner()
+        if runner:
+            return runner
     candidates: list[str] = [custom] if custom else []
     for base in ("/Applications", os.path.join(HOME, "Applications")):
         candidates.append(os.path.join(base, "CrossOver.app"))
@@ -778,7 +867,7 @@ def rosetta_installed() -> bool:
 
 
 def crossover_env(cx: CrossOver, graphics_backend: str = "", winemsync: bool = True,
-                  mtl_hud_enabled: bool = False) -> dict:
+                  mtl_hud_enabled: bool = False, steam: bool = False) -> dict:
     """Environment for running CrossOver's Wine straight against Bandit's own prefix."""
     env = os.environ.copy()
     win_dlls = os.path.join(cx.root, "lib", "wine", "x86_64-windows")
@@ -801,7 +890,198 @@ def crossover_env(cx: CrossOver, graphics_backend: str = "", winemsync: bool = T
         env["CX_APPLEGPTK_LIBD3DSHARED_PATH"] = d3d
     env.setdefault("ROSETTA_ADVERTISE_AVX", "1")   # many modern games refuse to start without AVX
     env.setdefault("WINEDEBUG", "fixme-all")       # keep the log readable
+    if steam and cx.bridge:
+        env["WINEDLLPATH"] = prefix_steam_dir() + ":" + env["WINEDLLPATH"]
+        env["WINEDLLOVERRIDES"] += ";steamclient=n;steamclient64=n;lsteamclient=b"
+        env["STEAM_COMPAT_CLIENT_INSTALL_PATH"] = native_steam_client_path()
+        env["STEAM_COMPAT_DATA_PATH"] = PFX_ROOT
+        env["SteamAppId"] = env["SteamGameId"] = STEAM_APP_ID
     return env
+
+
+# ---- Native Steam handoff (macOS) ---------------------------------------- #
+# Same idea as NotProton: Bandit doesn't run a Steam game's exe itself. It asks the macOS Steam
+# client to launch it (steam://rungameid/<appid>), and Steam runs it with its own Steam Play
+# compatibility tool. That way no Windows copy of Steam is needed inside Bandit's prefix.
+
+STEAM_ROOT = os.path.join(HOME, "Library", "Application Support", "Steam")
+
+
+def steam_client_installed() -> bool:
+    return OS == "Darwin" and os.path.isdir(STEAM_ROOT)
+
+
+def steam_library_dirs() -> list[str]:
+    """Every Steam library folder that has a steamapps directory."""
+    dirs = [STEAM_ROOT]
+    try:
+        with open(os.path.join(STEAM_ROOT, "steamapps", "libraryfolders.vdf"), encoding="utf-8", errors="replace") as f:
+            for m in re.finditer(r'"path"\s+"([^"]+)"', f.read()):
+                dirs.append(m.group(1).replace("\\\\", "\\"))
+    except OSError:
+        pass
+    out: list[str] = []
+    for d in dirs:
+        if d not in out and os.path.isdir(os.path.join(d, "steamapps")):
+            out.append(d)
+    return out
+
+
+def steam_app_install_dir(appid: str) -> str | None:
+    """Where Steam has this app fully installed, or None if it isn't installed in Steam."""
+    if not appid or not appid.isdigit():
+        return None
+    for lib in steam_library_dirs():
+        manifest = os.path.join(lib, "steamapps", f"appmanifest_{appid}.acf")
+        try:
+            with open(manifest, encoding="utf-8", errors="replace") as f:
+                text = f.read()
+        except OSError:
+            continue
+        flags = re.search(r'"StateFlags"\s+"(\d+)"', text)
+        folder = re.search(r'"installdir"\s+"([^"]+)"', text)
+        if flags and int(flags.group(1)) & 4 and folder:  # 4 = fully installed
+            return os.path.join(lib, "steamapps", "common", folder.group(1))
+    return None
+
+
+def steam_running() -> bool:
+    try:
+        return subprocess.run(["pgrep", "-x", "steam_osx"], capture_output=True, timeout=5).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def _process_table() -> dict[int, tuple[int, str]]:
+    """pid -> (ppid, command line) for every process."""
+    try:
+        out = subprocess.run(["ps", "-axww", "-o", "pid=,ppid=,command="],
+                             capture_output=True, text=True, timeout=10).stdout
+    except (OSError, subprocess.SubprocessError):
+        return {}
+    table: dict[int, tuple[int, str]] = {}
+    for line in out.splitlines():
+        parts = line.split(None, 2)
+        if len(parts) == 3 and parts[0].isdigit() and parts[1].isdigit():
+            table[int(parts[0])] = (int(parts[1]), parts[2])
+    return table
+
+
+def steam_game_pids(appid: str, install_dir: str | None) -> set[int]:
+    """The game's process tree: whatever Steam started for it (its `AppId=` reaper, a process running
+    out of the install folder, or NotProton's per-game launcher) plus all their descendants."""
+    table = _process_table()
+    me = os.getpid()
+    tag = re.compile(r"\bAppId=" + re.escape(appid) + r"\b")
+    roots = {pid for pid, (_pp, cmd) in table.items()
+             if pid != me and not cmd.startswith(("open ", "/usr/bin/open ")) and
+             (tag.search(cmd) or (install_dir and install_dir + "/" in cmd))}
+    try:  # NotProton registers a LaunchServices app per game
+        info = subprocess.run(["lsappinfo", "find", f"bundleid=com.notproton.launcher.{appid}"],
+                              capture_output=True, text=True, timeout=5).stdout.strip()
+        if info:
+            pid = subprocess.run(["lsappinfo", "info", "-only", "pid", info.split()[0]],
+                                 capture_output=True, text=True, timeout=5).stdout
+            m = re.search(r"=\s*(\d+)", pid)
+            if m:
+                roots.add(int(m.group(1)))
+    except (OSError, subprocess.SubprocessError):
+        pass
+    found = set(roots)
+    grew = True
+    while grew:
+        grew = False
+        for pid, (ppid, _cmd) in table.items():
+            if ppid in found and pid not in found and pid != me:
+                found.add(pid)
+                grew = True
+    return found
+
+
+class SteamHandoff:
+    """Stands in for a Popen: asks macOS Steam to launch an app, then watches the game it starts.
+
+    poll() is None while Steam is starting the game and while the game runs. It only reports an
+    exit after the game has been seen and has stayed gone for a few checks, so the moments between
+    Steam's own wrapper processes don't look like the game quitting."""
+
+    CHECK_EVERY = 2.0
+    GONE_CHECKS = 3
+
+    def __init__(self, appid: str, install_dir: str | None) -> None:
+        self.appid, self.install_dir = appid, install_dir
+        self.pid = 0
+        self.never_started = False
+        self.started_at: float | None = None
+        self._rc: int | None = None
+        self._t0 = time.time()
+        self._timeout = 180.0 if steam_running() else 300.0  # Steam may need to start (and log in) first
+        self._last = 0.0
+        self._gone = 0
+        subprocess.Popen(["open", f"steam://rungameid/{appid}"], stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL)
+
+    def poll(self) -> int | None:
+        if self._rc is not None:
+            return self._rc
+        now = time.time()
+        if now - self._last < self.CHECK_EVERY:
+            return None
+        self._last = now
+        if steam_game_pids(self.appid, self.install_dir):
+            if self.started_at is None:
+                self.started_at = now
+            self._gone = 0
+        elif self.started_at is not None:
+            self._gone += 1
+            if self._gone >= self.GONE_CHECKS:
+                self._rc = 0
+        elif now - self._t0 > self._timeout:
+            self.never_started, self._rc = True, 1
+        return self._rc
+
+    def wait(self, timeout: float | None = None) -> int:
+        end = None if timeout is None else time.time() + timeout
+        while self.poll() is None:
+            if end is not None and time.time() > end:
+                raise subprocess.TimeoutExpired("steam", timeout or 0)
+            time.sleep(0.25)
+        return self._rc or 0
+
+    def _signal(self, sig: int) -> None:
+        for pid in steam_game_pids(self.appid, self.install_dir):
+            try:
+                os.kill(pid, sig)
+            except OSError:
+                pass
+
+    def terminate(self) -> None:
+        self._signal(signal.SIGTERM)
+        self._rc = 0 if self._rc is None else self._rc
+
+    def kill(self) -> None:
+        self._signal(signal.SIGKILL)
+        self._rc = 0 if self._rc is None else self._rc
+
+
+def ensure_steam_url_forwarding(cx: "CrossOver") -> None:
+    """Inside the prefix, send steam:// links (a game's 'open in Steam', 'restart via Steam', store pages)
+    to the macOS Steam client through winebrowser, like NotProton's steam.exe stub does. Skipped when a
+    Windows Steam is installed in the prefix, since that registers its own handler."""
+    marker = os.path.join(WINE_PREFIX, ".bandit_steam_forward")
+    windows_steam = os.path.join(WINE_PREFIX, "drive_c", "Program Files (x86)", "Steam", "steam.exe")
+    if os.path.exists(marker) or os.path.exists(windows_steam) or not steam_client_installed():
+        return
+    env = crossover_env(cx)
+    key = r"HKCU\Software\Classes\steam"
+    cmd = r'C:\windows\system32\winebrowser.exe "%1"'
+    for args in (["/ve", "/d", "URL:steam"], ["/v", "URL Protocol", "/d", ""]):
+        subprocess.run([cx.loader, "reg", "add", key, *args, "/f"], env=env, capture_output=True, timeout=60)
+    r = subprocess.run([cx.loader, "reg", "add", key + r"\shell\open\command", "/ve", "/d", cmd, "/f"],
+                       env=env, capture_output=True, timeout=60)
+    if r.returncode == 0:
+        with open(marker, "w") as f:
+            f.write("steam:// links in this prefix are forwarded to the macOS Steam client\n")
 
 
 def prefix_ready() -> bool:
@@ -824,18 +1104,22 @@ def create_prefix(cx: CrossOver) -> None:
         raise RuntimeError(f"CrossOver didn't finish creating the Windows environment.\nSee {log_path}")
 
 
-def wine_target(game_path: str) -> list[str]:
-    """What to hand the Wine loader for this file (batch/script files go through their interpreter)."""
+def wine_target(game_path: str, steam: bool = False) -> list[str]:
+    """What to hand the Wine loader for this file (batch/script files go through their interpreter).
+    With the Steam bridge the game is started by steam.exe, like Proton does."""
     ext = os.path.splitext(game_path)[1].lower()
     dos = "Z:" + game_path.replace("/", "\\")  # Wine maps the Mac's whole filesystem to Z:
     if ext in (".bat", ".cmd"):
-        return ["cmd.exe", "/c", "call", dos]
-    if ext == ".vbs":
-        return ["wscript.exe", dos]
-    return [game_path]
+        target = ["cmd.exe", "/c", "call", dos]
+    elif ext == ".vbs":
+        target = ["wscript.exe", dos]
+    else:
+        target = [game_path]
+    return ([STEAM_SHIM] + target) if steam else target
 
 
-def create_crossover_shortcut(display_name: str, exe: str, icon: str | None, cx: CrossOver) -> None:
+def create_crossover_shortcut(display_name: str, exe: str, icon: str | None, cx: CrossOver,
+                              steam_appid: str | None = None) -> None:
     """Desktop launcher for a Windows game: a tiny .app that runs it through CrossOver. Raises on failure."""
     desk, safe = desktop_path(), sanitize_filename(display_name) or "Game"
     os.makedirs(desk, exist_ok=True)
@@ -845,12 +1129,19 @@ def create_crossover_shortcut(display_name: str, exe: str, icon: str | None, cx:
     os.makedirs(macos)
     os.makedirs(resources)
 
-    env = crossover_env(cx)
+    steam = bool(cx.bridge)
+    if steam:
+        stage_steam_bridge(cx)
+    env = crossover_env(cx, steam=steam)
     keys = ("CX_ROOT", "CX_HOME", "WINEPREFIX", "WINELOADER", "WINESERVER", "WINEDLLPATH", "PATH",
-            "WINEDLLOVERRIDES", "CX_APPLEGPTK_LIBD3DSHARED_PATH", "ROSETTA_ADVERTISE_AVX", "WINEDEBUG")
+            "WINEDLLOVERRIDES", "CX_APPLEGPTK_LIBD3DSHARED_PATH", "ROSETTA_ADVERTISE_AVX", "WINEDEBUG",
+            "STEAM_COMPAT_CLIENT_INSTALL_PATH", "STEAM_COMPAT_DATA_PATH", "SteamAppId", "SteamGameId")
     lines = ["#!/bin/bash"] + [f"export {k}={shlex.quote(env[k])}" for k in keys if k in env]
-    lines.append(f"cd {shlex.quote(os.path.dirname(exe))}")
-    lines.append("exec " + " ".join(shlex.quote(a) for a in [cx.loader] + wine_target(exe)))
+    if steam_appid:  # let macOS Steam launch it, exactly like NotProton's game tiles
+        lines = ["#!/bin/bash", f"exec /usr/bin/open steam://rungameid/{steam_appid}"]
+    else:
+        lines.append(f"cd {shlex.quote(os.path.dirname(exe))}")
+        lines.append("exec " + " ".join(shlex.quote(a) for a in [cx.loader] + wine_target(exe, steam)))
     launcher = os.path.join(macos, "launcher")
     with open(launcher, "w", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")
@@ -1537,6 +1828,10 @@ class MainWindow(QMainWindow):
 
         self.act_update = self._mk("Check for Updates…", lambda: self.check_updates(manual=True))
         self.act_locate_cx = self._mk("Locate CrossOver…", self.locate_crossover)
+        self.act_steam_bridge = QAction("Connect Windows Games to Steam", self)
+        self.act_steam_bridge.setCheckable(True)
+        self.act_steam_bridge.setChecked(bool(self.settings.get("Connect to Steam", True)))
+        self.act_steam_bridge.toggled.connect(self.toggle_steam_bridge)
         self.act_about = self._mk("About Bandit", self.show_about)
         self.act_about.setMenuRole(QAction.MenuRole.AboutRole)
 
@@ -1546,6 +1841,7 @@ class MainWindow(QMainWindow):
         m.addAction(self.act_settings)
         if OS == "Darwin":
             m.addAction(self.act_locate_cx)
+            m.addAction(self.act_steam_bridge)
         m.addSeparator()
         m.addAction(self.act_quit)
 
@@ -2285,10 +2581,17 @@ class MainWindow(QMainWindow):
             form.addRow("", backend_other)
             form.addRow("MSync:", winemsync_check)
             form.addRow("Metal HUD (Peformance overlay):", mtl_hud_check)
+            handoff_check = None
+            if game.steam_appid:
+                handoff_check = QCheckBox("Enabled")
+                handoff_check.setChecked(self.meta.steam_handoff.get(game.id, False))
+                form.addRow("Launch Steam's own copy:", handoff_check)
             form.setRowVisible(backend_other, backend_combo.currentData() is None)
             backend_combo.currentIndexChanged.connect(
                 lambda _index: form.setRowVisible(backend_other, backend_combo.currentData() is None))
-            note = QLabel("These options apply to Windows games launched through CrossOver on macOS.")
+            note = QLabel("These options apply to Windows games launched through CrossOver on macOS. "
+                          "\"Launch Steam's own copy\" has macOS Steam launch the game from its own library instead "
+                          "of running Bandit's files, so leave it off for mods.")
         elif OS == "Linux":
             proton_wined3d_check = QCheckBox("Enabled")
             proton_wined3d_check.setChecked(self.meta.proton_use_wined3d.get(game.id, False))
@@ -2323,6 +2626,8 @@ class MainWindow(QMainWindow):
                 self.meta.graphics_backend.pop(game.id, None)
             self.meta.winemsync[game.id] = winemsync_check.isChecked()
             self.meta.mtl_hud_enabled[game.id] = mtl_hud_check.isChecked()
+            if handoff_check is not None:
+                self.meta.steam_handoff[game.id] = handoff_check.isChecked()
         elif OS == "Linux":
             self.meta.proton_use_wined3d[game.id] = proton_wined3d_check.isChecked()
         self.meta.save()
@@ -2579,20 +2884,49 @@ class MainWindow(QMainWindow):
             self.proc_cx_waiting = False
             workdir = os.path.dirname(game_path)
 
-            if OS == "Darwin" and section == "Windows":
+            steam_dir = self._steam_handoff_target(game) if (OS == "Darwin" and section == "Windows") else None
+            if steam_dir:
+                proc = SteamHandoff(game.steam_appid, steam_dir)
+                self.set_status(f"Launching {game.name} through Steam…")
+            elif OS == "Darwin" and section == "Windows":
                 cx = self._ensure_crossover(then=lambda: self.play(game))
                 if cx is None:
                     return
                 write_account_name_files(self.settings.account_name)  # the prefix may be new
+                steam = bool(cx.bridge)
+                if steam:
+                    if not steam_running():
+                        subprocess.Popen(["open", "-b", "com.valvesoftware.steam"],
+                                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                        QMessageBox.information(
+                            self, "Steam isn't running",
+                            f"{game.name} connects to your macOS Steam client, which wasn't running. "
+                            "Bandit is starting it now. Once you're signed in, press Play again.")
+                        return
+                    stage_steam_bridge(cx)
+                elif self.settings.get("Connect to Steam", True) and steam_client_installed() \
+                        and not getattr(self, "_warned_bridge", False):
+                    self._warned_bridge = True
+                    QMessageBox.information(
+                        self, "No Steam connection",
+                        "This game will run without a connection to Steam, because NotProton's patched "
+                        "CrossOver isn't set up. Install NotProton and let it set up its runner (it provides "
+                        "the Steam bridge that Proton has on Linux), or turn this off under File ▸ "
+                        "Connect Windows Games to Steam.")
                 env = crossover_env(
                     cx,
                     self.meta.graphics_backend.get(game.id, ""),
                     self.meta.winemsync.get(game.id, True),
                     self.meta.mtl_hud_enabled.get(game.id, False),
+                    steam=steam,
                 )
+                try:
+                    ensure_steam_url_forwarding(cx)
+                except (OSError, subprocess.SubprocessError) as e:
+                    print(f"[WARNING] Couldn't set up steam:// forwarding: {e}")
                 log_path = os.path.join(USER_DATA, "crossover.log")
                 with open(log_path, "w") as log:
-                    proc = subprocess.Popen([cx.loader] + wine_target(game_path) + args, cwd=workdir, env=env,
+                    proc = subprocess.Popen([cx.loader] + wine_target(game_path, steam) + args, cwd=workdir, env=env,
                                             stdout=log, stderr=subprocess.STDOUT)
                 self.proc_cx = (cx, env)
             elif OS == "Darwin":
@@ -2639,11 +2973,29 @@ class MainWindow(QMainWindow):
             self.proc_started = time.time()
             self.meta.last_played[game.id] = int(self.proc_started)
             self.meta.save()
-            self.set_status(f"{game.name} is running.")
+            if not steam_dir:
+                self.set_status(f"{game.name} is running.")
             send_telemetry(self.settings, "game_launched", game)
             self.update_rows()
         except Exception as e:  # noqa: BLE001
             QMessageBox.critical(self, "Error", f"Failed to launch the game:\n{e}")
+
+    def _find_cx(self) -> CrossOver | None:
+        return find_crossover(self.settings.get("CrossOver path", ""),
+                              steam_bridge=bool(self.settings.get("Connect to Steam", True)))
+
+    def toggle_steam_bridge(self, on: bool) -> None:
+        self.settings.set("Connect to Steam", bool(on))
+        self.set_status("Windows games will connect to your macOS Steam client." if on else
+                        "Windows games will run without a Steam connection.")
+
+    def _steam_handoff_target(self, game: Game) -> str | None:
+        """Steam's install folder for this game when it should be launched through macOS Steam, else None."""
+        if OS != "Darwin" or not game.steam_appid or not self.meta.steam_handoff.get(game.id, False):
+            return None
+        if not steam_client_installed():
+            return None
+        return steam_app_install_dir(game.steam_appid)
 
     def _ensure_proton(self, then) -> str | None:
         binary = find_proton_binary()
@@ -2686,7 +3038,7 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Task in progress",
                                     "Please wait for the current task to finish before launching a Windows game.")
             return None
-        cx = find_crossover(self.settings.get("CrossOver path", ""))
+        cx = self._find_cx()
         if cx is None:
             self._offer_crossover(then)
             return None
@@ -2782,7 +3134,8 @@ class MainWindow(QMainWindow):
     def _game_finished(self) -> None:
         game = self.proc_game
         if game and self.proc_started:
-            elapsed = int(time.time() - self.proc_started)
+            began = getattr(self.proc, "started_at", None) or self.proc_started  # Steam handoff: from when it ran
+            elapsed = int(time.time() - began)
             if elapsed >= 1:
                 self.meta.playtime[game.id] = self.meta.playtime.get(game.id, 0) + elapsed
                 self.meta.save()
@@ -2846,8 +3199,17 @@ class MainWindow(QMainWindow):
                                         f"The game launched, but Bandit couldn't track it reliably:\n{e}")
                     self.proc_cx = None
             name = self.proc_game.name if self.proc_game else "Game"
+            never = getattr(self.proc, "never_started", False)
             self._game_finished()
-            self.set_status(f"{name} exited.")
+            if never:
+                self.set_status(f"{name} didn't start.")
+                QMessageBox.warning(
+                    self, "Steam didn't launch the game",
+                    f"Steam never started {name}. Open Steam and check that you're signed in and that "
+                    "the game launches from there, or turn off \"Launch Steam's own copy\" in "
+                    "Game ▸ Launch Options…")
+            else:
+                self.set_status(f"{name} exited.")
             self.update_rows()
 
     # ---- uninstall / move / browse / shortcut ------------------------- #
@@ -3045,13 +3407,14 @@ class MainWindow(QMainWindow):
             icon = os.path.join(install_path, icon_rel.lstrip("/"))
         try:
             if OS == "Darwin" and section == "Windows":
-                cx = find_crossover(self.settings.get("CrossOver path", ""))
+                cx = self._find_cx()
                 if cx is None:
                     QMessageBox.warning(self, "CrossOver not found",
                                         "Bandit couldn't find CrossOver, which this game needs. "
                                         "Use File ▸ Locate CrossOver… and try again.")
                     return
-                create_crossover_shortcut(game.name, exe, icon, cx)
+                via_steam = game.steam_appid if self._steam_handoff_target(game) else None
+                create_crossover_shortcut(game.name, exe, icon, cx, steam_appid=via_steam)
             else:
                 create_desktop_shortcut(game.name, exe, icon, via_proton=(OS == "Linux" and section == "Windows"))
             QMessageBox.information(self, "Shortcut Created", f"Desktop shortcut created for {game.name}.")
