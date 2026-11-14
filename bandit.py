@@ -55,6 +55,13 @@ TELEMETRY_ENDPOINTS = (
 GITHUB_LATEST = "https://api.github.com/repos/FelixBand/Bandit/releases/latest"
 RELEASES_PAGE = "https://github.com/FelixBand/Bandit/releases/latest"
 PROTON_API = "https://api.github.com/repos/GloriousEggroll/proton-ge-custom/releases/latest"
+CROSSOVER_URL = f"{BASE_URL}/Darwin/CrossOver.tar.gz"            # contains CrossOver.app
+CROSSOVER_FIX_URL = f"{BASE_URL}/Darwin/CrossOverFix.tar.gz"     # contains fix-crossover/fix.tool
+NOTPROTON_API = "https://api.github.com/repos/NotProtonNot/NotProton/releases/latest"
+CROSSOVER_APP = "/Applications/CrossOver.app"
+NOTPROTON_APP = "/Applications/NotProton.app"
+# Run as root (sudo) from inside fix-crossover/. Adjust here if fix.tool wants different arguments.
+CROSSOVER_FIX_ARGS: list[str] = []   # fix.tool is written to be double-clicked, so it gets no arguments
 
 # Set BANDIT_DEBUG_OS=Windows (etc.) to test another platform's catalog.
 OS = os.environ.get("BANDIT_DEBUG_OS") or platform.system()  # Windows / Linux / Darwin
@@ -200,6 +207,7 @@ class Settings:
         "UI scale": 125,
         "CrossOver path": "",
         "Connect to Steam": True,
+        "CrossOver stamp": "",
         "Account name": "",
         "_first_launch": True,
     }
@@ -531,9 +539,13 @@ class DownloadWorker(QThread):
     progress = pyqtSignal(float, str)   # fraction 0..1, status text
     result = pyqtSignal(bool, str)      # ok, "" | "cancelled" | error message
 
-    def __init__(self, url, dest: str, label: str, fixed_folder: str | None = None, parent=None):
+    def __init__(self, url, dest: str, label: str, fixed_folder: str | None = None, parent=None,
+                 mode: str = "tar"):
+        """mode: "tar" (Python extraction), "systar" (piped into the system tar, which keeps app-bundle
+        symlinks/permissions intact) or "zip" (a .zip unpacked with ditto, as macOS apps are shipped)."""
         super().__init__(parent)
         self.url, self.dest, self.label, self.fixed_folder = url, dest, label, fixed_folder
+        self.mode = mode
         self._cancel = threading.Event()
         self._downloaded = 0
         self._total = 0
@@ -571,16 +583,63 @@ class DownloadWorker(QThread):
                 r.raise_for_status()
                 self._total = int(r.headers.get("Content-Length") or 0)
                 stream = _ProgressStream(r.raw, self._on_bytes, self._cancel)
-                with tarfile.open(fileobj=stream, mode="r|gz") as tar:
-                    if self.fixed_folder:
-                        self._extract_fixed(tar)
-                    else:
-                        self._extract(tar, self.dest)
+                if self.mode == "systar":
+                    self._extract_system_tar(stream)
+                elif self.mode == "zip":
+                    self._extract_zip(stream)
+                else:
+                    with tarfile.open(fileobj=stream, mode="r|gz") as tar:
+                        if self.fixed_folder:
+                            self._extract_fixed(tar)
+                        else:
+                            self._extract(tar, self.dest)
             self.result.emit(True, "")
         except _Cancelled:
             self.result.emit(False, "cancelled")
         except Exception as e:  # noqa: BLE001
             self.result.emit(False, str(e))
+
+    def _extract_system_tar(self, stream) -> None:
+        os.makedirs(self.dest, exist_ok=True)
+        with tempfile.TemporaryFile() as err:
+            p = subprocess.Popen(["tar", "-xzf", "-", "-C", self.dest], stdin=subprocess.PIPE, stderr=err)
+            try:
+                while True:
+                    chunk = stream.read(1 << 20)
+                    if not chunk:
+                        break
+                    p.stdin.write(chunk)
+                p.stdin.close()
+            except BrokenPipeError:
+                pass
+            except BaseException:
+                p.kill()
+                p.wait()
+                raise
+            rc = p.wait()
+            if rc:
+                err.seek(0)
+                raise RuntimeError(err.read().decode(errors="replace").strip() or f"tar exited with {rc}")
+
+    def _extract_zip(self, stream) -> None:
+        os.makedirs(self.dest, exist_ok=True)
+        with tempfile.NamedTemporaryFile(suffix=".zip", dir=self.dest, delete=False) as f:
+            path = f.name
+            while True:
+                chunk = stream.read(1 << 20)
+                if not chunk:
+                    break
+                f.write(chunk)
+        try:
+            if shutil.which("ditto"):  # keeps symlinks, permissions and code signatures
+                cmd = ["ditto", "-x", "-k", path, self.dest]
+            else:
+                cmd = ["unzip", "-q", "-o", path, "-d", self.dest]
+            r = subprocess.run(cmd, capture_output=True, text=True)
+            if r.returncode:
+                raise RuntimeError(r.stderr.strip() or "The download couldn't be unpacked.")
+        finally:
+            os.remove(path)
 
     @staticmethod
     def _extract(tar: tarfile.TarFile, dest: str) -> set[str]:
@@ -1082,6 +1141,83 @@ def ensure_steam_url_forwarding(cx: "CrossOver") -> None:
     if r.returncode == 0:
         with open(marker, "w") as f:
             f.write("steam:// links in this prefix are forwarded to the macOS Steam client\n")
+
+
+# ---- Installing / updating CrossOver and NotProton (macOS) ------------------------------------
+
+def app_version(app: str) -> str | None:
+    try:
+        with open(os.path.join(app, "Contents", "Info.plist"), "rb") as f:
+            info = plistlib.load(f)
+    except (OSError, plistlib.InvalidFileException, ValueError):
+        return None
+    return str(info.get("CFBundleShortVersionString") or info.get("CFBundleVersion") or "?")
+
+
+def app_running(name: str) -> bool:
+    try:
+        return subprocess.run(["pgrep", "-f", f"/{name}.app/Contents/MacOS/"],
+                              capture_output=True, timeout=5).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def remote_stamp(url: str) -> str:
+    """Identifies the file currently on the server (the archives carry no version number)."""
+    try:
+        r = requests.head(url, timeout=10, allow_redirects=True)
+        r.raise_for_status()
+    except requests.RequestException:
+        return ""
+    return f"{r.headers.get('Last-Modified', '')}|{r.headers.get('Content-Length', '')}"
+
+
+def latest_notproton() -> tuple[str, str, int]:
+    """(tag, download url, size) of NotProton's newest release."""
+    r = requests.get(NOTPROTON_API, timeout=15, headers={"Accept": "application/vnd.github+json"})
+    r.raise_for_status()
+    data = r.json()
+    assets = data.get("assets", [])
+    # the release workflow publishes NotProton.zip; ignore symbol/debug archives if there are any
+    ranked = sorted((a for a in assets if a.get("name", "").lower().endswith(".zip")
+                     and "dsym" not in a.get("name", "").lower()),
+                    key=lambda a: a["name"].lower() != "notproton.zip")
+    for asset in ranked[:1]:
+        return data.get("tag_name", "?"), asset["browser_download_url"], int(asset.get("size") or 0)
+    raise RuntimeError("No NotProton download was found on its latest release.")
+
+
+def swap_in_app(staging: str, target: str, verify_signature: bool = False) -> None:
+    """Replace `target` with the .app unpacked in `staging`, then delete `staging`. Raises on failure."""
+    try:
+        found = [n for n in os.listdir(staging) if n.endswith(".app")]
+        if not found:
+            raise RuntimeError("The download didn't contain an application.")
+        new = os.path.join(staging, found[0])
+        if verify_signature:
+            r = subprocess.run(["codesign", "--verify", "--deep", "--strict", new], capture_output=True, text=True)
+            if r.returncode:
+                raise RuntimeError("The download's code signature didn't verify, so it was not installed.\n"
+                                   + r.stderr.strip())
+        if os.path.isdir(target):
+            shutil.rmtree(target)
+        os.rename(new, target)
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+
+
+def windows_support_status() -> dict:
+    """What's installed vs. what's on offer (network calls; run off the UI thread)."""
+    try:
+        np_latest = latest_notproton()[0]
+    except Exception:  # noqa: BLE001
+        np_latest = None
+    return {
+        "cx_version": app_version(CROSSOVER_APP),
+        "cx_remote": remote_stamp(CROSSOVER_URL),
+        "np_version": app_version(NOTPROTON_APP),
+        "np_latest": np_latest,
+    }
 
 
 def prefix_ready() -> bool:
@@ -1828,6 +1964,7 @@ class MainWindow(QMainWindow):
 
         self.act_update = self._mk("Check for Updates…", lambda: self.check_updates(manual=True))
         self.act_locate_cx = self._mk("Locate CrossOver…", self.locate_crossover)
+        self.act_windows_support = self._mk("Windows Game Support…", self.show_windows_support)
         self.act_steam_bridge = QAction("Connect Windows Games to Steam", self)
         self.act_steam_bridge.setCheckable(True)
         self.act_steam_bridge.setChecked(bool(self.settings.get("Connect to Steam", True)))
@@ -1840,6 +1977,7 @@ class MainWindow(QMainWindow):
         m = mb.addMenu("&File")
         m.addAction(self.act_settings)
         if OS == "Darwin":
+            m.addAction(self.act_windows_support)
             m.addAction(self.act_locate_cx)
             m.addAction(self.act_steam_bridge)
         m.addSeparator()
@@ -2911,8 +3049,8 @@ class MainWindow(QMainWindow):
                         self, "No Steam connection",
                         "This game will run without a connection to Steam, because NotProton's patched "
                         "CrossOver isn't set up. Install NotProton and let it set up its runner (it provides "
-                        "the Steam bridge that Proton has on Linux), or turn this off under File ▸ "
-                        "Connect Windows Games to Steam.")
+                        "the Steam bridge that Proton has on Linux), or install it from File ▸ Windows "
+                        "Game Support… (or turn this off under File ▸ Connect Windows Games to Steam).")
                 env = crossover_env(
                     cx,
                     self.meta.graphics_backend.get(game.id, ""),
@@ -3029,6 +3167,211 @@ class MainWindow(QMainWindow):
         self._start_download(w, ("proton", None))
         return None
 
+    # ---- install / update CrossOver and NotProton ----------------------- #
+
+    def _download_failed(self, staging: str, what: str, msg: str) -> None:
+        shutil.rmtree(staging, ignore_errors=True)
+        self.set_status("Download cancelled." if msg == "cancelled" else "Download failed.")
+        if msg != "cancelled":
+            QMessageBox.warning(self, what, f"Download failed:\n{msg}")
+        self.update_rows()
+        self._pump()
+
+    def install_crossover(self, then=None) -> None:
+        if self.active:
+            self.set_status("Please wait for the current task to finish.")
+            return
+        if app_running("CrossOver"):
+            self.set_status("Quit CrossOver, then try again.")
+            return
+        try:
+            staging = tempfile.mkdtemp(prefix=".bandit-install-", dir=os.path.dirname(CROSSOVER_APP))
+        except OSError as e:
+            QMessageBox.warning(self, "CrossOver", f"Couldn't write to /Applications:\n{e}")
+            return
+        w = DownloadWorker(CROSSOVER_URL, staging, "CrossOver", mode="systar", parent=self)
+
+        def downloaded(ok: bool, msg: str) -> None:
+            self._finish_download()
+            if not ok:
+                self._download_failed(staging, "CrossOver", msg)
+                return
+
+            def swap() -> str:
+                swap_in_app(staging, CROSSOVER_APP)
+                return remote_stamp(CROSSOVER_URL)
+
+            def installed(stamp: str) -> None:
+                self.settings.set("CrossOver path", CROSSOVER_APP)
+                self.settings.set("CrossOver stamp", stamp)
+                send_telemetry(self.settings, "crossover_installed")
+                self.set_status("CrossOver installed.")
+                self.apply_crossover_fix(then)
+
+            self._run_setup("cx-install", "Installing", "CrossOver", swap, installed, "CrossOver",
+                            pass_result=True)
+
+        w.result.connect(downloaded)
+        self._start_download(w, ("crossover", None))
+
+    def apply_crossover_fix(self, then=None) -> None:
+        """Download Bandit's CrossOver patch and run fix.tool with macOS administrator authorization."""
+        if self.active:
+            self.set_status("Please wait for the current task to finish.")
+            return
+        if not os.path.isdir(CROSSOVER_APP):
+            self.set_status("Install CrossOver through Bandit first.")
+            return
+        workdir = tempfile.mkdtemp(prefix="bandit-fix-")
+        w = DownloadWorker(CROSSOVER_FIX_URL, workdir, "CrossOver patches", mode="systar", parent=self)
+
+        def downloaded(ok: bool, msg: str) -> None:
+            self._finish_download()
+            if not ok:
+                self._download_failed(workdir, "CrossOver patches", msg)
+                return
+
+            def run_fix() -> None:
+                succeeded = False
+                try:
+                    fixdir = os.path.join(workdir, "fix-crossover")
+                    tool = os.path.join(fixdir, "fix.tool")
+                    if not os.path.isfile(tool):
+                        raise RuntimeError("fix-crossover/fix.tool wasn't in the patch download.")
+                    os.chmod(tool, 0o755)
+                    args = " ".join(shlex.quote(a) for a in CROSSOVER_FIX_ARGS)
+                    command = f"cd {shlex.quote(fixdir)} && {shlex.quote(tool)} {args}".rstrip()
+                    apple_script_command = command.replace("\\", "\\\\").replace('"', '\\"')
+                    result = subprocess.run(
+                        ["osascript", "-e",
+                         f'do shell script "{apple_script_command}" with administrator privileges'],
+                        capture_output=True, text=True, timeout=900)
+                    if result.returncode:
+                        detail = result.stderr.strip() or result.stdout.strip()
+                        raise RuntimeError(detail or "The CrossOver patches didn't complete.")
+                    succeeded = True
+                finally:
+                    if succeeded:
+                        shutil.rmtree(workdir, ignore_errors=True)
+
+            def patched() -> None:
+                self.set_status("CrossOver patched.")
+                send_telemetry(self.settings, "crossover_patched")
+                if then:
+                    then()
+
+            self._run_setup("cx-fix", "Patching", "CrossOver", run_fix, patched,
+                            "CrossOver patches")
+
+        w.result.connect(downloaded)
+        self._start_download(w, ("crossover-fix", None))
+
+    def install_notproton(self) -> None:
+        if self.active:
+            self.set_status("Please wait for the current task to finish.")
+            return
+        if app_running("NotProton"):
+            self.set_status("Quit NotProton, then try again.")
+            return
+
+        def got_release(rel: tuple[str, str, int]) -> None:
+            tag, url, _ = rel
+            try:
+                staging = tempfile.mkdtemp(prefix=".bandit-install-", dir=os.path.dirname(NOTPROTON_APP))
+            except OSError as e:
+                QMessageBox.warning(self, "NotProton", f"Couldn't write to /Applications:\n{e}")
+                return
+            w = DownloadWorker(url, staging, "NotProton", mode="zip", parent=self)
+
+            def downloaded(ok: bool, msg: str) -> None:
+                self._finish_download()
+                if not ok:
+                    self._download_failed(staging, "NotProton", msg)
+                    return
+                self._run_setup("np-install", "Installing", "NotProton",
+                                lambda: swap_in_app(staging, NOTPROTON_APP, verify_signature=True),
+                                lambda: self._notproton_installed(tag), "NotProton")
+
+            w.result.connect(downloaded)
+            self._start_download(w, ("notproton", None))
+
+        self._run_setup("np-check", "Checking", "NotProton releases", latest_notproton, got_release,
+                        "NotProton", pass_result=True)
+
+    def _notproton_installed(self, tag: str) -> None:
+        send_telemetry(self.settings, "notproton_installed")
+        self.set_status(f"NotProton {tag} installed.")
+        try:
+            subprocess.Popen(["open", NOTPROTON_APP], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except OSError:
+            pass
+
+    def show_windows_support(self) -> None:
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Windows Game Support")
+        cx_label, np_label = QLabel("Checking…"), QLabel("Checking…")
+        cx_btn, np_btn = QPushButton("Install"), QPushButton("Install")
+        fix_btn = QPushButton("Reapply Patch…")
+        for b in (cx_btn, np_btn, fix_btn):
+            b.setEnabled(False)
+        grid = QGridLayout()
+        grid.addWidget(QLabel("<b>CrossOver</b>"), 0, 0)
+        grid.addWidget(cx_label, 0, 1)
+        grid.addWidget(cx_btn, 0, 2)
+        grid.addWidget(fix_btn, 1, 2)
+        grid.addWidget(QLabel("<b>NotProton</b>"), 2, 0)
+        grid.addWidget(np_label, 2, 1)
+        grid.addWidget(np_btn, 2, 2)
+        grid.setColumnStretch(1, 1)
+        grid.setHorizontalSpacing(16)
+        close = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        close.rejected.connect(dlg.reject)
+        layout = QVBoxLayout(dlg)
+        layout.addLayout(grid)
+        layout.addWidget(close)
+        dlg.setMinimumWidth(int(520 * self.devicePixelRatioF()))
+
+        def later(fn):
+            return lambda: (dlg.accept(), QTimer.singleShot(0, fn))
+
+        cx_btn.clicked.connect(later(self.install_crossover))
+        fix_btn.clicked.connect(later(self.apply_crossover_fix))
+        np_btn.clicked.connect(later(self.install_notproton))
+
+        def show(st: dict, err) -> None:
+            if err or not dlg.isVisible():
+                return
+            busy = bool(self.active)
+            ver, remote, saved = st["cx_version"], st["cx_remote"], self.settings.get("CrossOver stamp", "")
+            if not ver:
+                cx_label.setText("Not installed")
+                cx_btn.setText("Install")
+            elif not saved:
+                cx_label.setText(f"Installed ({ver}), not installed through Bandit")
+                cx_btn.setText("Reinstall")
+            elif remote and remote != saved:
+                cx_label.setText(f"Installed ({ver}), update available")
+                cx_btn.setText("Update")
+            else:
+                cx_label.setText(f"Installed ({ver})" + ("" if remote else ", couldn't check for updates"))
+                cx_btn.setText("Reinstall")
+            nv, latest = st["np_version"], st["np_latest"]
+            if not nv:
+                np_label.setText("Not installed")
+                np_btn.setText("Install")
+            elif latest and version_tuple(latest) > version_tuple(nv):
+                np_label.setText(f"Installed ({nv}), {latest} is available")
+                np_btn.setText("Update")
+            else:
+                np_label.setText(f"Installed ({nv})" + ("" if latest else ", couldn't check for updates"))
+                np_btn.setText("Reinstall")
+            cx_btn.setEnabled(not busy)
+            fix_btn.setEnabled(not busy and bool(ver))
+            np_btn.setEnabled(not busy)
+
+        self.run_task(windows_support_status, show)
+        dlg.exec()
+
     # ---- CrossOver setup (macOS twin of _ensure_proton) ---------------- #
 
     def _ensure_crossover(self, then) -> CrossOver | None:
@@ -3053,16 +3396,14 @@ class MainWindow(QMainWindow):
     def _offer_crossover(self, then) -> None:
         box = QMessageBox(self)
         box.setWindowTitle("CrossOver required")
-        box.setText("Windows games run on your Mac through CrossOver, which Bandit can't download for you. "
-                    "CrossOver is made by CodeWeavers (paid, with a free trial).\n\n"
-                    "Install it and try again, or point Bandit at your copy.")
-        get = box.addButton("Get CrossOver…", QMessageBox.ButtonRole.AcceptRole)
+        box.setText("CrossOver is required to run Windows games.")
+        get = box.addButton("Install CrossOver…", QMessageBox.ButtonRole.AcceptRole)
         loc = box.addButton("Locate CrossOver…", QMessageBox.ButtonRole.AcceptRole)
         box.addButton(QMessageBox.StandardButton.Cancel)
         box.exec()
         clicked = box.clickedButton()
         if clicked is get:
-            webbrowser.open(CROSSOVER_DOWNLOAD_PAGE, new=2)
+            self.install_crossover(then=then)
         elif clicked is loc and self.locate_crossover():
             then()
 
@@ -3078,21 +3419,22 @@ class MainWindow(QMainWindow):
         self.set_status(f"Using {os.path.basename(path)}.")
         return True
 
-    def _run_setup(self, kind: str, title: str, name: str, fn, on_ok, fail_title: str) -> None:
+    def _run_setup(self, kind: str, title: str, name: str, fn, on_ok, fail_title: str,
+                   pass_result: bool = False) -> None:
         """Run a long setup step off the UI thread with the centered busy panel (like a download)."""
         self.active = (kind, None)
         self.set_status("")
         self.dl_busy(title, name)
         self.update_rows()
 
-        def done(_res, err) -> None:
+        def done(res, err) -> None:
             self.active = None
             self.dl_hide()
             if err:
                 self.set_status("")
                 QMessageBox.warning(self, fail_title, str(err))
             else:
-                on_ok()
+                on_ok(res) if pass_result else on_ok()
             self.update_rows()
             self._pump()
 
