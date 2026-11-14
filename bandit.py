@@ -251,11 +251,11 @@ def write_account_name_files(name: str) -> None:
         appdata = os.getenv("APPDATA")
         if not appdata:
             return
-        folders = [os.path.join(appdata, g, "settings") for g in ("Goldberg SteamEmu Saves", "Goldberg SocialClub Emu Saves")]
+        folders = [os.path.join(appdata, g, "settings") for g in ("GSES", "GSCS")]
     else:
-        folders = [os.path.join(HOME, ".local", "share", g, "settings") for g in ("Goldberg SteamEmu Saves", "Goldberg SocialClub Emu Saves")]
+        folders = [os.path.join(HOME, ".local", "share", g, "settings") for g in ("GSES", "GSCS")]
         if HAS_WINDOWS_LAYER:  # same folders inside the prefix, for Windows builds
-            folders += [os.path.join(r, g, "settings") for r in prefix_roaming_dirs() for g in ("Goldberg SteamEmu Saves", "Goldberg SocialClub Emu Saves")]
+            folders += [os.path.join(r, g, "settings") for r in prefix_roaming_dirs() for g in ("GSES", "GSCS")]
     for folder in folders:
         try:
             os.makedirs(folder, exist_ok=True)
@@ -868,11 +868,12 @@ def stage_steam_bridge(cx: CrossOver) -> None:
             pass
         shutil.copy2(s, d)
     for name in os.listdir(dst):  # drop stale files, as NotProton does
-        if name.lower().endswith((".dll", ".so", ".exe")) and name not in wanted:
-            try:
-                os.remove(os.path.join(dst, name))
-            except OSError:
-                pass
+            if name.lower().endswith((".dll", ".so", ".exe")) and name not in wanted \
+                and not name.lower().startswith("gameoverlayrenderer"):
+                try:
+                    os.remove(os.path.join(dst, name))
+                except OSError:
+                    pass
 
 
 def native_steam_client_path() -> str:
