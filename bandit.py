@@ -46,7 +46,7 @@ from PyQt6.QtWidgets import (
 # 1. Constants & platform paths
 # --------------------------------------------------------------------------- #
 
-VERSION = "3.0.0"
+VERSION = "3.1.0"
 BASE_URL = "https://thuis.felixband.nl/bandit"
 TELEMETRY_ENDPOINTS = (
     "https://thuis.felixband.nl/api/telemetry",
