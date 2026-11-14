@@ -3917,11 +3917,12 @@ def main() -> int:
     apply_ui_scale(read_json(SETTINGS_PATH, {}).get("UI scale", UI_SCALE_DEFAULT))
     # No custom style or stylesheet: Qt uses the platform's native look (and dark mode).
 
-    for icon_file in ("icon.ico", "icon.png"):
-        path = resource_path(icon_file)
-        if os.path.exists(path):
-            app.setWindowIcon(QIcon(path))
-            break
+    if not OS == 'Darwin':
+        for icon_file in ("icon.ico", "icon.png"):
+            path = resource_path(icon_file)
+            if os.path.exists(path):
+                app.setWindowIcon(QIcon(path))
+                break
 
     error = ensure_program_data()
     if error:
