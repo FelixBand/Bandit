@@ -85,7 +85,6 @@ WINE_PREFIX = os.path.join(PFX_ROOT, "pfx")
 HAS_WINDOWS_LAYER = OS in ("Linux", "Darwin")  # can run Windows builds (Proton / CrossOver)
 NATIVE_NAME = {"Linux": "Linux", "Darwin": "macOS"}.get(OS, OS)
 COMPAT_LAYER = "CrossOver" if OS == "Darwin" else "Proton"
-CROSSOVER_DOWNLOAD_PAGE = "https://www.codeweavers.com/crossover/download"
 WINE_DLL_OVERRIDES = "dinput8,winhttp,winmm=n,b"
 
 SETTINGS_PATH = os.path.join(USER_DATA, "settings.json")
