@@ -251,11 +251,11 @@ def write_account_name_files(name: str) -> None:
         appdata = os.getenv("APPDATA")
         if not appdata:
             return
-        folders = [os.path.join(appdata, g, "settings") for g in ("GSES", "GSCS")]
+        folders = [os.path.join(appdata, g, "settings") for g in ("Goldberg SteamEmu Saves", "Goldberg SocialClub Emu Saves")]
     else:
-        folders = [os.path.join(HOME, ".local", "share", g, "settings") for g in ("GSES", "GSCS")]
+        folders = [os.path.join(HOME, ".local", "share", g, "settings") for g in ("Goldberg SteamEmu Saves", "Goldberg SocialClub Emu Saves")]
         if HAS_WINDOWS_LAYER:  # same folders inside the prefix, for Windows builds
-            folders += [os.path.join(r, g, "settings") for r in prefix_roaming_dirs() for g in ("GSES", "GSCS")]
+            folders += [os.path.join(r, g, "settings") for r in prefix_roaming_dirs() for g in ("Goldberg SteamEmu Saves", "Goldberg SocialClub Emu Saves")]
     for folder in folders:
         try:
             os.makedirs(folder, exist_ok=True)
@@ -843,6 +843,32 @@ def notproton_runner() -> CrossOver | None:
     return None
 
 
+OVERLAY_DLL_URL = f"{BASE_URL}/Darwin/GameOverlayRenderer64.dll"
+
+
+def ensure_overlay_dll(dst: str) -> None:
+    """Some games ship an overlay loader that expects Steam's GameOverlayRenderer64.dll in the prefix's Steam
+    folder. Download it once if it's missing. Failures only print a warning; the game just won't find it."""
+    path = os.path.join(dst, "GameOverlayRenderer64.dll")
+    if os.path.isfile(path):
+        return
+    tmp = path + ".part"
+    try:
+        r = requests.get(OVERLAY_DLL_URL, timeout=(10, 60))
+        r.raise_for_status()
+        if len(r.content) < 1024 or r.content[:2] != b"MZ":
+            raise ValueError("the download isn't a Windows DLL")
+        with open(tmp, "wb") as f:
+            f.write(r.content)
+        os.replace(tmp, path)
+    except (requests.RequestException, OSError, ValueError) as e:
+        print(f"[WARNING] Couldn't install GameOverlayRenderer64.dll: {e}")
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+
+
 def stage_steam_bridge(cx: CrossOver) -> None:
     """Copy the bridge into Bandit's prefix the way NotProton does. Raises OSError on failure."""
     if not cx.bridge:
@@ -867,13 +893,14 @@ def stage_steam_bridge(cx: CrossOver) -> None:
         except OSError:
             pass
         shutil.copy2(s, d)
+    ensure_overlay_dll(dst)
     for name in os.listdir(dst):  # drop stale files, as NotProton does
-            if name.lower().endswith((".dll", ".so", ".exe")) and name not in wanted \
+        if name.lower().endswith((".dll", ".so", ".exe")) and name not in wanted \
                 and not name.lower().startswith("gameoverlayrenderer"):
-                try:
-                    os.remove(os.path.join(dst, name))
-                except OSError:
-                    pass
+            try:
+                os.remove(os.path.join(dst, name))
+            except OSError:
+                pass
 
 
 def native_steam_client_path() -> str:
