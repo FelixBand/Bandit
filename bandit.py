@@ -2722,13 +2722,11 @@ class MainWindow(QMainWindow):
             if game.steam_appid:
                 handoff_check = QCheckBox("Enabled")
                 handoff_check.setChecked(self.meta.steam_handoff.get(game.id, False))
-                form.addRow("Launch Steam's own copy:", handoff_check)
+                # form.addRow("Launch Steam's own copy:", handoff_check)
             form.setRowVisible(backend_other, backend_combo.currentData() is None)
             backend_combo.currentIndexChanged.connect(
                 lambda _index: form.setRowVisible(backend_other, backend_combo.currentData() is None))
-            note = QLabel("These options apply to Windows games launched through CrossOver on macOS. "
-                          "\"Launch Steam's own copy\" has macOS Steam launch the game from its own library instead "
-                          "of running Bandit's files, so leave it off for mods.")
+            note = QLabel("These options apply to Windows games launched through CrossOver on macOS.")
         elif OS == "Linux":
             proton_wined3d_check = QCheckBox("Enabled")
             proton_wined3d_check.setChecked(self.meta.proton_use_wined3d.get(game.id, False))
