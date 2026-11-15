@@ -206,6 +206,7 @@ class Settings:
         "UI scale": 125,
         "CrossOver path": "",
         "Connect to Steam": True,
+        "Option is Alt": True,
         "CrossOver stamp": "",
         "Account name": "",
         "_first_launch": True,
@@ -1267,6 +1268,37 @@ def create_prefix(cx: CrossOver) -> None:
         raise RuntimeError(f"CrossOver didn't finish creating the Windows environment.\nSee {log_path}")
 
 
+MAC_ALT_KEYS = ("LeftOptionIsAlt", "RightOptionIsAlt")
+
+
+def ensure_option_as_alt(cx: CrossOver, on: bool) -> None:
+    """Windows keyboard layout: Option acts as Alt (so Alt+F4, Alt+Tab-style combos sit where Windows
+    players expect them) instead of Wine's default of Command being Alt. Set in the prefix's registry
+    and remembered in a marker file, so it's written once per change and again for a rebuilt prefix."""
+    marker = os.path.join(WINE_PREFIX, ".bandit_option_alt")
+    want = "Y" if on else "N"
+    try:
+        with open(marker, encoding="utf-8") as f:
+            if f.read().strip() == want:
+                return
+    except OSError:
+        pass
+    env = crossover_env(cx)
+    env.pop("WINEDLLOVERRIDES", None)
+    key = r"HKCU\Software\Wine\Mac Driver"
+    ok = True
+    for name in MAC_ALT_KEYS:
+        if on:
+            cmd = [cx.loader, "reg", "add", key, "/v", name, "/d", "Y", "/f"]
+        else:  # back to Wine's default; deleting a value that isn't there fails harmlessly
+            cmd = [cx.loader, "reg", "delete", key, "/v", name, "/f"]
+        r = subprocess.run(cmd, env=env, capture_output=True, timeout=60)
+        ok = ok and (r.returncode == 0 or not on)
+    if ok:
+        with open(marker, "w", encoding="utf-8") as f:
+            f.write(want + "\n")
+
+
 def wine_target(game_path: str, steam: bool = False) -> list[str]:
     """What to hand the Wine loader for this file (batch/script files go through their interpreter).
     With the Steam bridge the game is started by steam.exe, like Proton does."""
@@ -1992,6 +2024,10 @@ class MainWindow(QMainWindow):
         self.act_update = self._mk("Check for Updates…", lambda: self.check_updates(manual=True))
         self.act_locate_cx = self._mk("Locate CrossOver…", self.locate_crossover)
         self.act_windows_support = self._mk("Windows Game Support…", self.show_windows_support)
+        self.act_option_alt = QAction("Use Option as Alt in Windows Games", self)
+        self.act_option_alt.setCheckable(True)
+        self.act_option_alt.setChecked(bool(self.settings.get("Option is Alt", True)))
+        self.act_option_alt.toggled.connect(self.toggle_option_alt)
         self.act_steam_bridge = QAction("Connect Windows Games to Steam", self)
         self.act_steam_bridge.setCheckable(True)
         self.act_steam_bridge.setChecked(bool(self.settings.get("Connect to Steam", True)))
@@ -2007,6 +2043,7 @@ class MainWindow(QMainWindow):
             m.addAction(self.act_windows_support)
             m.addAction(self.act_locate_cx)
             m.addAction(self.act_steam_bridge)
+            m.addAction(self.act_option_alt)
         m.addSeparator()
         m.addAction(self.act_quit)
 
@@ -3084,6 +3121,10 @@ class MainWindow(QMainWindow):
                     steam=steam,
                 )
                 try:
+                    ensure_option_as_alt(cx, bool(self.settings.get("Option is Alt", True)))
+                except (OSError, subprocess.SubprocessError) as e:
+                    print(f"[WARNING] Couldn't set the keyboard layout: {e}")
+                try:
                     ensure_steam_url_forwarding(cx)
                 except (OSError, subprocess.SubprocessError) as e:
                     print(f"[WARNING] Couldn't set up steam:// forwarding: {e}")
@@ -3146,6 +3187,13 @@ class MainWindow(QMainWindow):
     def _find_cx(self) -> CrossOver | None:
         return find_crossover(self.settings.get("CrossOver path", ""),
                               steam_bridge=bool(self.settings.get("Connect to Steam", True)))
+
+    def toggle_option_alt(self, on: bool) -> None:
+        self.settings.set("Option is Alt", bool(on))
+        self.set_status("Option will act as Alt in Windows games (Alt+F4 is Option+Fn+F4). "
+                        "Applies the next time a game starts." if on else
+                        "Command will act as Alt in Windows games, as in plain Wine. "
+                        "Applies the next time a game starts.")
 
     def toggle_steam_bridge(self, on: bool) -> None:
         self.settings.set("Connect to Steam", bool(on))
