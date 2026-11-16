@@ -10,6 +10,7 @@ import platform
 import plistlib
 import random
 import re
+import hashlib
 import shlex
 import shutil
 import signal
@@ -386,6 +387,31 @@ class InstalledStore:
         self._write(data)
 
 
+OSASCRIPT = "/usr/bin/osascript"
+
+
+def resolve_prereqs(raw, os_name: str) -> list:
+    """The prerequisite steps for this OS. A plain list is the Windows list (used everywhere, as before).
+    A dict holds per-platform lists: "Windows", and optionally "Darwin" / "Linux" (or a shared "Compat"),
+    which REPLACE the Windows list on those platforms."""
+    if not raw:
+        return []
+    if isinstance(raw, list):
+        return raw
+    if not isinstance(raw, dict):
+        return []
+    keys = [os_name, "Compat", "Windows"] if os_name in ("Darwin", "Linux") else ["Windows"]
+    for key in keys:
+        if key in raw:
+            return raw[key] or []
+    return []
+
+
+def req_rel(path: str) -> str:
+    """Manifest paths may start with '/'; make them relative so os.path.join keeps the game folder."""
+    return (path or "").lstrip("/\\")
+
+
 class PrereqStore:
     def __init__(self) -> None:
         self.data: dict = read_json(PREREQS_PATH, {})
@@ -398,8 +424,30 @@ class PrereqStore:
         write_json(PREREQS_PATH, self.data)
 
     def clear(self, game_id: str) -> None:
-        if self.data.pop(game_id, None) is not None:
+        keys = [k for k in self.data if k == game_id or k.startswith(game_id + "@")]
+        for k in keys:
+            del self.data[k]
+        if keys:
             write_json(PREREQS_PATH, self.data)
+
+
+def prereq_key(game_id: str, create: bool = False) -> str:
+    """Where a game's prerequisites are recorded. On macOS/Linux they live in the Wine prefix, so the record
+    is tied to that prefix: delete ~/.banditpfx and they're installed again. Ends in '@none' while there's
+    no prefix to tie it to yet."""
+    if OS == "Windows":
+        return game_id
+    marker = os.path.join(WINE_PREFIX, ".bandit_prefix_id")
+    try:
+        with open(marker, encoding="utf-8") as f:
+            pid = f.read().strip()
+    except OSError:
+        pid = ""
+    if not pid and create and os.path.isdir(WINE_PREFIX):
+        pid = os.urandom(6).hex()
+        with open(marker, "w", encoding="utf-8") as f:
+            f.write(pid + "\n")
+    return f"{game_id}@{pid or 'none'}"
 
 
 META_PATH = os.path.join(USER_DATA, "library.json")
@@ -3028,13 +3076,195 @@ class MainWindow(QMainWindow):
             return
         game_path = os.path.normpath(os.path.join(install_path, exe_rel))
 
-        reqs = manifest.prereqs.get(game.id)
-        if OS == "Windows" and reqs and not self.prereqs.done(game.id):
-            self._install_prereqs(game, section, install_path, manifest, reqs, game_path)
-        else:
+        reqs = resolve_prereqs(manifest.prereqs.get(game.id), OS)
+        if OS == "Windows":
+            reqs = [r for r in reqs if r.get("type") != "native"]
+            if reqs and not self.prereqs.done(prereq_key(game.id)):
+                self._install_prereqs(game, section, install_path, manifest, reqs, game_path)
+                return
+        elif reqs:
+            self._install_prereqs_wine(game, section, install_path, manifest, reqs, game_path)
+            return
+        self._launch(game, section, game_path)
+
+    PREREQ_OK_CODES = {0, 1638, 1641, 3010, 3011}  # success, newer version present, reboot (pointless in Wine)
+
+    @staticmethod
+    def _native_key(game_id: str, req: dict) -> str:
+        return f"{game_id}@native:{req_rel(req.get('path', ''))}"
+
+    @staticmethod
+    def _check_passes(cmd: str) -> bool:
+        try:
+            return subprocess.run(cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                  timeout=20).returncode == 0
+        except (subprocess.TimeoutExpired, OSError):
+            return False
+
+    def _native_argv(self, full: str, extra: list[str]) -> list[str]:
+        low = full.lower()
+        if low.endswith(".pkg"):
+            return ["/usr/sbin/installer", "-pkg", full, "-target", "/"]
+        if low.endswith((".sh", ".command", ".bash")):
+            return ["/bin/bash", full] + extra
+        return [full] + extra
+
+    @staticmethod
+    def _elevate(argv: list[str]) -> list[str]:
+        if OS == "Darwin":
+            line = " ".join(shlex.quote(a) for a in argv)
+            line = line.replace("\\", "\\\\").replace('"', '\\"')
+            return [OSASCRIPT, "-e", f'do shell script "{line}" with administrator privileges']
+        return ["pkexec"] + argv
+
+    def _install_prereqs_wine(self, game, section, install_path, manifest, reqs, game_path) -> None:
+        """Prerequisites for non-Windows platforms: Windows installers run silently inside the Wine prefix,
+        and "native" steps (ZeroTier and the like) run directly on the host, with consent and elevation."""
+        if self.active:
+            self.set_status("Please wait for the current task to finish.")
+            return
+        folder = manifest.first_folder(game.id) or ""
+
+        def full_of(req) -> str:
+            return os.path.normpath(os.path.join(install_path, folder, req_rel(req.get("path", ""))))
+
+        wine_group_done = self.prereqs.done(prereq_key(game.id))
+        steps = []  # (kind, req) still to do, in manifest order
+        for req in reqs:
+            if req.get("type") == "native":
+                if req.get("check") and self._check_passes(req["check"]):
+                    continue
+                if not req.get("check") and self.prereqs.done(self._native_key(game.id, req)):
+                    continue
+                steps.append(("native", req))
+            elif section == "Windows" and not wine_group_done:
+                steps.append(("wine", req))
+        if not steps:
             self._launch(game, section, game_path)
+            return
+
+        natives = [r for k, r in steps if k == "native"]
+        if natives:
+            lines = "\n".join(f"• {r.get('name') or os.path.basename(r.get('path', ''))}"
+                              f"{'  (needs administrator access)' if r.get('admin') else ''}" for r in natives)
+            if QMessageBox.question(
+                self, "Install system components?",
+                f"{game.name} needs these installed on your computer:\n\n{lines}\n\n"
+                "Install them now? If you skip them, the game launches without them (online features may not work).",
+            ) != QMessageBox.StandardButton.Yes:
+                steps = [(k, r) for k, r in steps if k != "native"]
+                if not steps:
+                    self._launch(game, section, game_path)
+                    return
+
+        again = lambda: self.play(game)  # noqa: E731
+        env, runner, server = {}, [], None
+        if any(k == "wine" for k, _ in steps):
+            if OS == "Darwin":
+                cx = self._ensure_crossover(then=again)
+                if cx is None:
+                    return
+                env, runner, server = crossover_env(cx), [cx.loader], cx.server
+            else:
+                proton = self._ensure_proton(then=again)
+                if not proton:
+                    return
+                env, runner, server = proton_env(), [proton, "run"], None
+            env.pop("WINEDLLOVERRIDES", None)  # the game's DLL overrides don't belong on installers
+        log_path = os.path.join(USER_DATA, "prereqs.log")
+        wine_ran = any(k == "wine" for k, _ in steps)
+
+        def work() -> list[str]:
+            failures: list[str] = []
+            with open(log_path, "w", encoding="utf-8") as log:
+                for kind, req in steps:
+                    full = full_of(req)
+                    name = req.get("name") or os.path.basename(full)
+                    command = req.get("command") or ""
+                    if not os.path.isfile(full):
+                        failures.append(f"{name}: file not found")
+                        continue
+                    want = (req.get("sha256") or "").lower()
+                    if want:
+                        h = hashlib.sha256()
+                        with open(full, "rb") as fh:
+                            for chunk in iter(lambda: fh.read(1 << 20), b""):
+                                h.update(chunk)
+                        if h.hexdigest() != want:
+                            failures.append(f"{name}: checksum mismatch")
+                            continue
+                    try:
+                        extra = shlex.split(command.replace("\\", "\\\\")) if command else []
+                    except ValueError:
+                        failures.append(f"{name}: couldn't parse its command line")
+                        continue
+                    if kind == "native":
+                        argv = self._native_argv(full, extra)
+                        if req.get("admin") or full.lower().endswith(".pkg"):
+                            argv = self._elevate(argv)
+                        cmdline, run_env = argv, None
+                    else:
+                        if full.lower().endswith(".msi"):
+                            target = ["msiexec", "/i", "Z:" + full.replace("/", "\\")] + extra
+                        else:
+                            target = wine_target(full) + extra
+                        cmdline, run_env = runner + target, env
+                    log.write(f"\n$ {' '.join(cmdline)}\n")
+                    log.flush()
+                    try:
+                        r = subprocess.run(cmdline, cwd=os.path.dirname(full), env=run_env, stdout=log,
+                                           stderr=subprocess.STDOUT, timeout=1800)
+                    except subprocess.TimeoutExpired:
+                        failures.append(f"{name}: timed out")
+                        continue
+                    except OSError as ex:
+                        failures.append(f"{name}: {ex}")
+                        continue
+                    if r.returncode not in self.PREREQ_OK_CODES:
+                        failures.append(f"{name}: exit code {r.returncode}")
+                    elif kind == "native" and not req.get("check"):
+                        self.prereqs.mark(self._native_key(game.id, req))
+                if server:  # let Wine finish writing the registry before the game starts
+                    subprocess.run([server, "-w"], env=env, stdout=log, stderr=subprocess.STDOUT,
+                                   timeout=300, check=False)
+            return failures
+
+        def done(failures, err) -> None:
+            self.active = None
+            self.dl_hide()
+            self.set_status("")
+            if err:
+                QMessageBox.critical(self, "Prerequisite installation failed", str(err))
+                self.update_rows()
+                self._pump()
+                return
+            if failures:
+                if QMessageBox.question(
+                    self, "Some prerequisites didn't install",
+                    "These didn't finish:\n\n" + "\n".join(failures) + f"\n\nDetails: {log_path}\n\n"
+                    "Launch the game anyway? Bandit will try again next time.",
+                ) != QMessageBox.StandardButton.Yes:
+                    self.update_rows()
+                    self._pump()
+                    return
+            elif wine_ran:
+                key = prereq_key(game.id, create=True)
+                if not key.endswith("@none"):
+                    self.prereqs.mark(key)
+            self.update_rows()
+            self._launch(game, section, game_path)
+            self._pump()
+
+        self.active = ("prereq", game.id)
+        self.set_status("Installing prerequisites; this can take a few minutes…")
+        self.dl_busy("Installing prerequisites", game.name)
+        self.update_rows()
+        self.run_task(work, done)
 
     def _install_prereqs(self, game, section, install_path, manifest, reqs, game_path) -> None:
+        if OS != "Windows":
+            self._install_prereqs_wine(game, section, install_path, manifest, reqs, game_path)
+            return
         folder = manifest.first_folder(game.id) or ""
         cmds = []
         for req in reqs:
@@ -3965,12 +4195,11 @@ def main() -> int:
     apply_ui_scale(read_json(SETTINGS_PATH, {}).get("UI scale", UI_SCALE_DEFAULT))
     # No custom style or stylesheet: Qt uses the platform's native look (and dark mode).
 
-    if not OS == 'Darwin':
-        for icon_file in ("icon.ico", "icon.png"):
-            path = resource_path(icon_file)
-            if os.path.exists(path):
-                app.setWindowIcon(QIcon(path))
-                break
+    for icon_file in ("icon.ico", "icon.png"):
+        path = resource_path(icon_file)
+        if os.path.exists(path):
+            app.setWindowIcon(QIcon(path))
+            break
 
     error = ensure_program_data()
     if error:
