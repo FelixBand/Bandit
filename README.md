@@ -5,13 +5,12 @@ With this app, you can download and play games hosted on my dedicated file serve
 # Compiling
 
 To compile the app I use PyInstaller.
-Other dependencies are tkinter and customtkinter; the framework for the GUI, pillow, used to render images and requests, for downloading data over HTTP.
+Other dependencies are PyQt6; the framework for the GUI, pillow, used to render images and requests, for downloading data over HTTP.
 
 You can get these using pip with the following commands:
 
 ```
-pip install customtkinter
-pip install pillow
+pip install pyqt6
 pip install pyinstaller
 pip install requests
 ```
