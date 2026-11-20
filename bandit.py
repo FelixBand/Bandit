@@ -2003,6 +2003,9 @@ class MainWindow(QMainWindow):
         self.worker: QThread | None = None
         self.active: tuple[str, str | None] | None = None  # (kind, game_id)
         self.queue: list[Job] = []
+        # Per-game background jobs (uninstall, move, prerequisites) run beside downloads. `active` is only the
+        # transfer slot: one download/setup at a time, since parallel downloads just fight for bandwidth.
+        self.bg: dict[str, str] = {}
         self._tasks: set[TaskWorker] = set()
 
         self.proc: subprocess.Popen | None = None
@@ -2489,11 +2492,15 @@ class MainWindow(QMainWindow):
         a = self.active
         if a and a[1] == game.id:
             return "downloading" if a[0] == "install" else "working"
+        if game.id in self.bg:
+            return "working"
         if self.proc is not None and self.proc_game and self.proc_game.id == game.id:
             return "running"
         if any(j.game.id == game.id for j in self.queue):
             return "queued"
         return "installed" if self.is_installed(game) else "available"
+
+    BG_LABELS = {"uninstall": "Uninstalling…", "move": "Moving…", "prereq": "Installing prerequisites…"}
 
     def status_text(self, game: Game) -> str:
         st = self.state_for(game)
@@ -2502,7 +2509,7 @@ class MainWindow(QMainWindow):
         if st == "downloading":
             return "Installing…"
         if st == "working":
-            return "Working…"
+            return self.BG_LABELS.get(self.bg.get(game.id, ""), "Working…")
         if st == "queued":
             pos = next(i for i, j in enumerate(self.queue) if j.game.id == game.id) + 1
             return f"Queued ({pos})"
@@ -2718,12 +2725,12 @@ class MainWindow(QMainWindow):
         self.btn_primary.setText(text)
         self.btn_primary.setEnabled(enabled)
 
-        idle_installed = st == "installed" and not busy
+        idle_installed = st == "installed"  # a download of some OTHER game doesn't get in the way
         self.act_uninstall.setEnabled(idle_installed)
         self.btn_uninstall.setEnabled(idle_installed)
         self.btn_uninstall.setVisible(installed)
-        self.act_locate.setEnabled(not installed and not busy)
-        self.act_repair.setEnabled(idle_installed or (st == "installed" and busy))
+        self.act_locate.setEnabled(st == "available")
+        self.act_repair.setEnabled(idle_installed)
         self.act_move.setEnabled(idle_installed)
         self.act_browse.setEnabled(installed)
         self.act_shortcut.setEnabled(installed)
@@ -2941,7 +2948,7 @@ class MainWindow(QMainWindow):
 
     def request_install(self, game: Game, repair: bool = False) -> None:
         """Ask the questions (version, location, space) now, then queue the download."""
-        if self.state_for(game) in ("downloading", "queued"):
+        if self.state_for(game) in ("downloading", "queued", "working"):
             return
 
         if repair:
@@ -3120,8 +3127,7 @@ class MainWindow(QMainWindow):
     def _install_prereqs_wine(self, game, section, install_path, manifest, reqs, game_path) -> None:
         """Prerequisites for non-Windows platforms: Windows installers run silently inside the Wine prefix,
         and "native" steps (ZeroTier and the like) run directly on the host, with consent and elevation."""
-        if self.active:
-            self.set_status("Please wait for the current task to finish.")
+        if game.id in self.bg:
             return
         folder = manifest.first_folder(game.id) or ""
 
@@ -3230,8 +3236,7 @@ class MainWindow(QMainWindow):
             return failures
 
         def done(failures, err) -> None:
-            self.active = None
-            self.dl_hide()
+            self.bg.pop(game.id, None)
             self.set_status("")
             if err:
                 QMessageBox.critical(self, "Prerequisite installation failed", str(err))
@@ -3255,9 +3260,8 @@ class MainWindow(QMainWindow):
             self._launch(game, section, game_path)
             self._pump()
 
-        self.active = ("prereq", game.id)
-        self.set_status("Installing prerequisites; this can take a few minutes…")
-        self.dl_busy("Installing prerequisites", game.name)
+        self.bg[game.id] = "prereq"
+        self.set_status(f"Installing prerequisites for {game.name}; this can take a few minutes…")
         self.update_rows()
         self.run_task(work, done)
 
@@ -3279,8 +3283,7 @@ class MainWindow(QMainWindow):
             return subprocess.run(["powershell", "-Command", ps], capture_output=True, text=True, check=True)
 
         def done(_res, err) -> None:
-            self.active = None
-            self.dl_hide()
+            self.bg.pop(game.id, None)
             self.set_status("")
             if err:
                 detail = getattr(err, "stderr", "") or str(err)
@@ -3294,9 +3297,8 @@ class MainWindow(QMainWindow):
             self._launch(game, section, game_path)
             self._pump()
 
-        self.active = ("prereq", game.id)
+        self.bg[game.id] = "prereq"
         self.set_status("Approve the administrator prompt to continue.")
-        self.dl_busy("Installing prerequisites", game.name)
         self.update_rows()
         self.run_task(work, done)
 
@@ -3680,21 +3682,23 @@ class MainWindow(QMainWindow):
     def _ensure_crossover(self, then) -> CrossOver | None:
         """Return a ready-to-use CrossOver, or None after starting whatever it still needs
         (locating it, installing Rosetta, creating the prefix) and arranging for then() to run."""
+        cx = self._find_cx()
+        if cx is not None and not (not cx.arm64 and is_apple_silicon() and not rosetta_installed()) \
+                and prefix_ready():
+            return cx  # ready: no reason to wait for a download in the background
         if self.active:
             QMessageBox.information(self, "Task in progress",
-                                    "Please wait for the current task to finish before launching a Windows game.")
+                                    "CrossOver still needs setting up, which has to wait for the current "
+                                    "download or setup task to finish.")
             return None
-        cx = self._find_cx()
         if cx is None:
             self._offer_crossover(then)
             return None
         if not cx.arm64 and is_apple_silicon() and not rosetta_installed():
             self._install_rosetta(then)
             return None
-        if not prefix_ready():
-            self._create_prefix(cx, then)
-            return None
-        return cx
+        self._create_prefix(cx, then)
+        return None
 
     def _offer_crossover(self, then) -> None:
         box = QMessageBox(self)
@@ -3890,7 +3894,7 @@ class MainWindow(QMainWindow):
 
     def locate_existing_installation(self) -> None:
         game = self.selected_game()
-        if not game or self.is_installed(game) or self.active:
+        if not game or self.is_installed(game) or self.state_for(game) != "available":
             return
 
         selected_dir = QFileDialog.getExistingDirectory(
@@ -3922,7 +3926,7 @@ class MainWindow(QMainWindow):
 
     def uninstall(self) -> None:
         game = self.selected_game()
-        if not game or self.active:
+        if not game or self.state_for(game) != "installed":
             return
         section, install_path, _m, folder = self._install_info(game)
         if not section or not install_path or not folder:
@@ -3935,17 +3939,15 @@ class MainWindow(QMainWindow):
         ) != QMessageBox.StandardButton.Yes:
             return
 
-        self.active = ("uninstall", game.id)
-        self.set_status("")
-        self.dl_busy("Uninstalling", game.name)
+        self.bg[game.id] = "uninstall"
+        self.set_status(f"Uninstalling {game.name}…")
         self.update_rows()
 
         def work():
             shutil.rmtree(full)
 
         def done(_res, err) -> None:
-            self.active = None
-            self.dl_hide()
+            self.bg.pop(game.id, None)
             if err:
                 QMessageBox.warning(self, "Error",
                                     f"Failed to delete the game folder:\n{err}\n\nRemoving the entry anyway.")
@@ -3963,11 +3965,11 @@ class MainWindow(QMainWindow):
         game = self.selected_game()
         if not game:
             return
-        if self.active:
-            QMessageBox.information(self, "Move Game", "Please wait for the current task to finish.")
-            return
         if self.proc_game and self.proc_game.id == game.id:
             QMessageBox.information(self, "Move Game", "Quit the game before moving it.")
+            return
+        if self.state_for(game) != "installed":
+            QMessageBox.information(self, "Move Game", "Please wait for this game's current task to finish.")
             return
         section, install_path, _m, folder = self._install_info(game)
         if not section or not install_path or not folder:
@@ -3992,9 +3994,8 @@ class MainWindow(QMainWindow):
         ) != QMessageBox.StandardButton.Yes:
             return
 
-        self.active = ("move", game.id)
-        self.set_status("")
-        self.dl_busy("Moving", game.name)
+        self.bg[game.id] = "move"
+        self.set_status(f"Moving {game.name}…")
         self.update_rows()
 
         def work():
@@ -4003,8 +4004,7 @@ class MainWindow(QMainWindow):
             shutil.move(source, target_parent)
 
         def done(_res, err) -> None:
-            self.active = None
-            self.dl_hide()
+            self.bg.pop(game.id, None)
             if err:
                 self.set_status(f"Failed to move game: {err}")
             else:
@@ -4175,6 +4175,14 @@ class MainWindow(QMainWindow):
             self.queue.clear()
             self.worker.cancel()
             self.worker.wait(5000)
+        if self.bg and QMessageBox.question(
+            self, "Tasks in progress",
+            "Bandit is still " + ", ".join(sorted({self.BG_LABELS.get(k, "working").rstrip("…").lower()
+                                                   for k in self.bg.values()})) +
+            ".\n\nQuitting now could leave a game half-installed or half-removed. Quit anyway?",
+        ) != QMessageBox.StandardButton.Yes:
+            event.ignore()
+            return
         if self.proc is not None:
             self._game_finished()  # bank the playtime so far
         for t in list(self._tasks):
